@@ -44,7 +44,6 @@ def check_aabb_overlap(min1, max1, min2, max2, margin=0.0):
     if max1[2] < min2[2] + margin or min1[2] > max2[2] - margin: return False
     return True
 
-# 建立全域實例供 PlacementManager 使用
 aabb_calc = AABBCalculator()
 
 # --- Scale Manager ---
@@ -79,7 +78,7 @@ class HistoryManager:
         self.undo_stack = []
         self.redo_stack = []
         self.limit = limit
-        self.reload_callback = reload_callback # 這是 main.py 裡的 load_model
+        self.reload_callback = reload_callback 
 
     def push_state(self, xml_path, model, data):
         with open(xml_path, 'r', encoding='utf-8') as f: xml_content = f.read()
@@ -91,12 +90,7 @@ class HistoryManager:
 
     def restore(self, snapshot, current_xml_path):
         with open(current_xml_path, 'w', encoding='utf-8') as f: f.write(snapshot['xml'])
-        
-        # 呼叫主程式傳進來的 reload 函數 (相當於 load_model(restore=False))
-        # 這裡我們需要一個機制來取回新的 state.model 和 state.data
-        # 為了簡單，我們假設 callback 會更新全域狀態，我們這裡只負責觸發
         new_model, new_data = self.reload_callback(restore=False)
-        
         try:
             if len(new_data.qpos) == len(snapshot['qpos']):
                 new_data.qpos[:] = snapshot['qpos']
@@ -125,23 +119,26 @@ class PlacementManager:
         self.original_rgba = {}
         self.original_contype = {}
         self.original_conaffinity = {}
-        # [New] 用來存移動前的初始狀態
         self.initial_qpos = None 
 
-    def start_placement(self, model, data, body_id): # [Updated] 多了 data 參數
-        # 如果有上一個還沒放好，先確認 (邏輯由 main 控制，但這裡做防禦)
-        if self.active_body_id != -1: 
-            pass 
+    def start_placement(self, model, data, body_id):
+        # [防呆修正] 如果重複選取自己，什麼都不做 (保持原本的 initial_qpos)
+        # 這樣可以避免把「移動中」的狀態誤存為「初始狀態」
+        if self.active_body_id == body_id:
+            return
 
+        # 如果有其他物體正在編輯，這裡不負責 Revert，由外部 main.py 控制
+        # 這裡只負責初始化新物體
         self.active_body_id = body_id
         
-        # [New] 記錄初始狀態 (Pos 3 + Quat 4 = 7)
+        # 1. 記錄初始狀態 (Pos 3 + Quat 4 = 7)
+        # 這就是我們的「回溯點」，無論之後怎麼亂動，Revert 時都會回到這裡
         jnt_adr = model.body_jntadr[body_id]
         if jnt_adr >= 0:
             qpos_adr = model.jnt_qposadr[jnt_adr]
             self.initial_qpos = data.qpos[qpos_adr : qpos_adr+7].copy()
         
-        # 暫存外觀與碰撞屬性，並將其暫時關閉碰撞 (變鬼魂)
+        # 2. 暫存外觀與碰撞屬性，並將其變為 Ghost (無碰撞)
         self.original_rgba.clear(); self.original_contype.clear(); self.original_conaffinity.clear()
         geoms = get_body_geoms(model, body_id)
         for gid in geoms:
@@ -177,24 +174,25 @@ class PlacementManager:
         self.original_rgba.clear()
 
     def confirm_placement(self, model):
-        """確認放置 (位置已由外部更新到 XML)"""
+        """確認放置 (不還原位置，只還原外觀)"""
         if self.active_body_id == -1: return
         self._cleanup_visuals(model)
         self.active_body_id = -1
         self.initial_qpos = None
 
     def revert_placement(self, model, data):
-        """[New] 取消放置：還原到初始位置"""
+        """[關鍵功能] 取消放置：強制把物體彈回 initial_qpos"""
         if self.active_body_id != -1 and self.initial_qpos is not None:
-            # 還原物理座標
+            # 1. 物理還原：寫回初始座標
             jnt_adr = model.body_jntadr[self.active_body_id]
             if jnt_adr >= 0:
                 qpos_adr = model.jnt_qposadr[jnt_adr]
                 data.qpos[qpos_adr : qpos_adr+7] = self.initial_qpos.copy()
             
-            # 還原外觀 (與 confirm 相同邏輯)
+            # 2. 外觀還原：變回實體顏色
             self._cleanup_visuals(model)
             
+            # 3. 清空狀態
             self.active_body_id = -1
             self.initial_qpos = None
             return True
