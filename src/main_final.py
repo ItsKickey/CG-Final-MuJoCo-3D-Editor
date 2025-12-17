@@ -125,6 +125,17 @@ def cancel_active_object():
         return True
     return False
 
+def update_gravity_from_gui(val):
+    """
+    val: 使用者輸入的數值 (float)
+    邏輯: 輸入 9.8 -> 重力設為 -9.8 (向下)
+         輸入 -1.0 -> 重力設為 1.0 (向上)
+    """
+    if state.model:
+        # 這裡實現你的需求：自動 * -1
+        # 確保 X, Y 軸歸零，只控制 Z
+        state.model.opt.gravity[:] = [0, 0, -float(val)]
+
 # --- Logic Functions (Internal) ---
 def _change_floor_workflow_logic():
     # 選擇圖片檔案 (png, jpg, etc.)
@@ -430,7 +441,9 @@ def main():
         undo_cb=perform_undo, 
         redo_cb=perform_redo,
         list_select_cb=on_gui_list_select,
-        floor_cb=change_floor_workflow
+        floor_cb=change_floor_workflow,
+        gravity_cb=update_gravity_from_gui
+
     )
 
     if os.path.exists(active_xml_path):

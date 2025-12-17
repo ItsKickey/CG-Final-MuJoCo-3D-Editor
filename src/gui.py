@@ -2,7 +2,7 @@
 import tkinter as tk
 
 class ControlPanel:
-    def __init__(self, load_cb, open_cb, add_light_cb, rot_cb, light_color_cb, confirm_cb, delete_cb, save_cb, undo_cb, redo_cb, list_select_cb,floor_cb):
+    def __init__(self, load_cb, open_cb, add_light_cb, rot_cb, light_color_cb, confirm_cb, delete_cb, save_cb, undo_cb, redo_cb, list_select_cb,floor_cb,gravity_cb):
         self.root = tk.Tk()
         self.root.title("Control Panel")
         self.root.geometry("360x900")
@@ -91,6 +91,33 @@ class ControlPanel:
         self.btn_confirm.pack(fill="x", pady=5)
         self.btn_delete = tk.Button(self.frame_place, text="🗑️ Delete (Del)", command=delete_cb, bg="#f88", state="disabled", height=2)
         self.btn_delete.pack(fill="x", pady=5)
+        frame_phys = tk.LabelFrame(self.content_frame, text="Physics", padx=10, pady=10, bg="#f0f0f0")
+        frame_phys.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(frame_phys, text="Gravity Z (Input + Enter):", bg="#f0f0f0").pack(anchor="w")
+        
+        # 使用 DoubleVar 綁定數值，預設為 9.81
+        self.var_grav = tk.DoubleVar(value=9.81) 
+        
+        # 建立 Entry 輸入框
+        self.entry_grav = tk.Entry(frame_phys, textvariable=self.var_grav, bg="white")
+        self.entry_grav.pack(fill="x", pady=2)
+        
+        # 定義觸發函式
+        def on_gravity_enter(event=None):
+            try:
+                val = self.var_grav.get()
+                gravity_cb(val) # 呼叫 main 傳進來的 callback
+                # 為了使用者體驗，可以讓焦點離開輸入框 (Optional)
+                self.content_frame.focus_set()
+            except ValueError:
+                pass
+
+        # 綁定 Enter 鍵 (Return) 觸發更新
+        self.entry_grav.bind("<Return>", on_gravity_enter)
+        
+        # 也可以加個小按鈕以免使用者不知道要按 Enter
+        tk.Button(frame_phys, text="Set Gravity", command=on_gravity_enter, bg="#ddd", height=1).pack(fill="x", pady=2)
 
         # Transform
         frame_trans = tk.LabelFrame(self.content_frame, text="Transform", padx=10, pady=10, bg="#f0f0f0")
