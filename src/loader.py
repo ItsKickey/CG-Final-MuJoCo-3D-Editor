@@ -1,6 +1,7 @@
 # src/loader.py
 import xml.etree.ElementTree as ET
 import mujoco
+import shutil
 import os
 from pathlib import Path
 
@@ -303,16 +304,41 @@ def change_floor_texture(xml_path, image_path):
                 break
                 
         if target_tex is not None:
+            # 清除舊的生成屬性 (builtin, rgb1, etc.)
             for attr in ["builtin", "rgb1", "rgb2", "mark", "markrgb", "width", "height"]:
                 if attr in target_tex.attrib:
                     del target_tex.attrib[attr]
             
             target_tex.set("type", "2d")
             
-            # [修改] 使用相對路徑
+            # ==== [修改開始] 複製貼圖邏輯 ====
+            # 1. 取得專案根目錄 (假設 src/loader.py 在 src 資料夾下，往上兩層即為根目錄)
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            
+            # 2. 定義目標資料夾: Import_mjcf/grid_textures
+            dest_dir = os.path.join(project_root, "Import_mjcf", "grid_textures")
+            if not os.path.exists(dest_dir):
+                os.makedirs(dest_dir) # 如果資料夾不存在則建立
+            
+            # 3. 定義目標檔案路徑
+            filename = os.path.basename(image_path)
+            dest_path = os.path.join(dest_dir, filename)
+            
+            # 4. 執行複製 (如果來源和目標不同才複製)
+            try:
+                #abspath 確保比對正確
+                if os.path.abspath(image_path) != os.path.abspath(dest_path):
+                    shutil.copy2(image_path, dest_path) # copy2 會保留檔案元數據
+                    print(f"[loader] Copied texture to: {dest_path}")
+            except Exception as e:
+                print(f"[loader] Warning: Copy failed ({e}). Using original path.")
+                dest_path = image_path # 如果複製失敗，回退使用原始路徑
+
+            # 5. 計算 XML 相對於「目標檔案」的相對路徑
             xml_dir = os.path.dirname(os.path.abspath(xml_path))
-            rel_path = get_relative_path(image_path, xml_dir)
+            rel_path = get_relative_path(dest_path, xml_dir)
             target_tex.set("file", rel_path)
+            # ==== [修改結束] ====
             
             if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
             tree.write(xml_path, encoding="utf-8", xml_declaration=True)

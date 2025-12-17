@@ -2,7 +2,7 @@
 <mujoco model="My Final Project">
   <option timestep="0.002" gravity="0 0 0" />
   <asset>
-    <texture name="grid" type="2d" file="D:/Research/CG/Final/Assets/textures/moon_01_diff_4k.png" />
+    <texture name="grid" type="2d" file="../Import_mjcf/grid_textures/moon_01_diff_4k.png" />
     <material name="grid_mat" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2" />
     <texture type="2d" name="basemodule_C_spacebits_texture" file="../Import_mjcf/basemodule_C/spacebits_texture.png" />
     <material name="basemodule_C_spacebits_texture" texture="basemodule_C_spacebits_texture" specular="0.50196078" shininess="0.15999998099999999" />
