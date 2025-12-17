@@ -10,7 +10,11 @@ from tkinter import filedialog
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.loader import load_scene_with_object, delete_body_from_scene, update_body_xml, LAST_IMPORTED_BODY_NAME
+# Import loader functions
+from src.loader import (
+    load_scene_with_object, delete_body_from_scene, update_body_xml, 
+    add_light_to_scene, update_light_xml, LAST_IMPORTED_BODY_NAME
+)
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
 from src.managers import ScaleManager, PlacementManager, HistoryManager
@@ -42,6 +46,7 @@ class EditorState:
         self.selected_body_id = -1; self.selected_qpos_adr = -1
         self.gui = None
         self.current_z_height = 0.0
+        self.is_light_selected = False
 
 state = EditorState()
 
@@ -65,14 +70,24 @@ def load_model(restore=True):
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         state.selected_body_id = -1
         state.selected_qpos_adr = -1
+        state.is_light_selected = False
         
         return state.model, state.data
     except Exception as e: 
         print(f"Error loading: {e}")
         return None, None
 
-# 初始化 HistoryManager (將 load_model 傳進去)
 history = HistoryManager(reload_callback=load_model)
+
+# --- Action Helpers ---
+def get_light_idx_for_body(body_id):
+    """[Fix] Helper to find light index for a given body"""
+    if state.model is None: return -1
+    # model.light_bodyid 是一個陣列，存著每個 light 對應的 body id
+    for i in range(state.model.nlight):
+        if state.model.light_bodyid[i] == body_id:
+            return i
+    return -1
 
 # --- Actions ---
 def open_scene():
@@ -103,8 +118,6 @@ def import_obj_workflow(obj_path=None):
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         
-        # 這裡不需要手動 restore，因為 load_scene_with_object 已經合併了 XML
-        
         if LAST_IMPORTED_BODY_NAME:
             bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
             if bid >= 0:
@@ -112,6 +125,41 @@ def import_obj_workflow(obj_path=None):
                 if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
     except Exception as e:
         print(e); import traceback; traceback.print_exc()
+
+def add_light_workflow():
+    try:
+        if state.gui: state.gui.set_status("Adding Light...")
+        if pm.active_body_id != -1: confirm_current_placement()
+
+        history.push_state(active_xml_path, state.model, state.data)
+        
+        spawn_h = state.current_z_height if state.current_z_height > 0 else 3.0
+        if add_light_to_scene(active_xml_path, spawn_pos=f"0 0 {spawn_h}"):
+            load_model(restore=True)
+            if LAST_IMPORTED_BODY_NAME:
+                bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
+                if bid >= 0:
+                    select_object_by_id(bid)
+                    if state.gui: state.gui.set_status("Added Point Light")
+    except Exception as e:
+        print(e)
+
+def update_light_color_from_gui(r, g, b):
+    if state.selected_body_id == -1 or not state.is_light_selected: return
+    
+    # [Fix] 使用 helper 尋找 light index
+    light_idx = get_light_idx_for_body(state.selected_body_id)
+    
+    if light_idx >= 0:
+        state.model.light_diffuse[light_idx] = np.array([r, g, b])
+        state.model.light_specular[light_idx] = np.array([r*0.5, g*0.5, b*0.5])
+        
+        geom_adr = state.model.body_geomadr[state.selected_body_id]
+        geom_num = state.model.body_geomnum[state.selected_body_id]
+        for i in range(geom_num):
+            state.model.geom_rgba[geom_adr+i] = np.array([r, g, b, 0.8])
+            
+        mujoco.mj_forward(state.model, state.data)
 
 def delete_selected_object():
     if state.selected_body_id == -1: return
@@ -137,11 +185,18 @@ def confirm_current_placement():
             pos = state.data.qpos[qpos_adr : qpos_adr+3]
             quat = state.data.qpos[qpos_adr+3 : qpos_adr+7]
             update_body_xml(active_xml_path, body_name, pos, quat)
+            
+            if state.is_light_selected:
+                light_idx = get_light_idx_for_body(pm.active_body_id)
+                if light_idx >= 0:
+                    rgb = state.model.light_diffuse[light_idx]
+                    update_light_xml(active_xml_path, body_name, rgb)
         
         pm.confirm_placement(state.model)
         state.selected_body_id = -1
         state.selected_qpos_adr = -1
-        state.gui.set_status("Placed successfully.")
+        state.is_light_selected = False
+        state.gui.set_status("Placed & Saved.")
 
 def save_scene_as():
     path = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("XML", "*.xml")])
@@ -151,9 +206,8 @@ def save_scene_as():
 
 def perform_undo():
     history.undo(active_xml_path, state.model, state.data)
-    # Undo 後 context 已經在 HistoryManager 透過 load_model 更新了
-    # 但我們需要重建 scene/ctx 因為 load_model 回傳了新的 model
-    # 其實 load_model 已經做了，我們只需要重置選擇
+    state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
+    state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
     pm.active_body_id = -1
 
 def perform_redo():
@@ -167,14 +221,25 @@ def select_object_by_id(body_id):
 
     state.selected_body_id = body_id
     jntadr = state.model.body_jntadr[body_id]
+    
+    # [Fix] 檢查是否為燈光 (使用 helper)
+    state.is_light_selected = (get_light_idx_for_body(body_id) != -1)
+    
     if jntadr >= 0:
         state.selected_qpos_adr = state.model.jnt_qposadr[jntadr]
         z = state.data.qpos[state.selected_qpos_adr + 2]
         quat = state.data.qpos[state.selected_qpos_adr+3 : state.selected_qpos_adr+7]
         r, p, y = quat2euler(quat)
         s = scale_mgr.get_current_scale(state.model, body_id)
+        
         state.current_z_height = z 
+        
         if state.gui: state.gui.set_values(z, s, r, p, y)
+        if state.is_light_selected and state.gui:
+            light_idx = get_light_idx_for_body(body_id)
+            rgb = state.model.light_diffuse[light_idx]
+            state.gui.set_light_values(rgb[0], rgb[1], rgb[2])
+            
         pm.start_placement(state.model, body_id)
     else: state.selected_qpos_adr = -1
 
@@ -202,7 +267,7 @@ def pick_object(window, xpos, ypos):
     body_id = state.model.geom_bodyid[geom_id]
     if body_id > 0:
         select_object_by_id(body_id)
-        if state.gui: state.gui.set_status(f"Moving ID: {body_id}")
+        if state.gui: state.gui.set_status(f"Selected: {body_id}")
 
 def raycast_to_ground(window, xpos, ypos, cam):
     width, height = glfw.get_framebuffer_size(window)
@@ -259,7 +324,6 @@ def key_callback(window, key, scancode, action, mods):
         elif key == glfw.KEY_Z and (mods & glfw.MOD_CONTROL): perform_undo()
         elif key == glfw.KEY_Y and (mods & glfw.MOD_CONTROL): perform_redo()
 
-# --- Main ---
 def main():
     if not glfw.init(): return
     window = glfw.create_window(1200, 900, "Final Project Editor", None, None)
@@ -267,7 +331,18 @@ def main():
     glfw.make_context_current(window)
     state.window = window
 
-    state.gui = ControlPanel(import_obj_workflow, open_scene, update_transform_from_gui, confirm_current_placement, delete_selected_object, save_scene_as, perform_undo, perform_redo)
+    state.gui = ControlPanel(
+        load_cb=import_obj_workflow, 
+        open_cb=open_scene, 
+        add_light_cb=add_light_workflow,
+        rot_cb=update_transform_from_gui, 
+        light_color_cb=update_light_color_from_gui,
+        confirm_cb=confirm_current_placement, 
+        delete_cb=delete_selected_object, 
+        save_cb=save_scene_as, 
+        undo_cb=perform_undo, 
+        redo_cb=perform_redo
+    )
 
     try:
         obj_a_xml = "Assets/obj/basemodule_A/basemodule_A.xml"
@@ -290,9 +365,11 @@ def main():
         sim_start = state.data.time
         while state.data.time - sim_start < 1.0/60.0:
             pm.update(state.model, state.data)
-            state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1)
+            state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
 
             state.data.qfrc_applied[:] = 0 
+            
+            # 1. 放置模式：凍結所有物體
             if pm.active_body_id != -1:
                 for i in range(state.model.nbody):
                     if i == 0: continue
@@ -302,6 +379,18 @@ def main():
                         state.data.qvel[dof_adr : dof_adr+6] = 0
                         state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
             
+            # 2. [Fix] 永遠凍結燈光 (改用 light_bodyid 遍歷)
+            for i in range(state.model.nlight):
+                body_id = state.model.light_bodyid[i]
+                # 確保這個 Body 是可移動的 Free Joint Body
+                jnt_adr = state.model.body_jntadr[body_id]
+                if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                    dof_adr = state.model.jnt_dofadr[jnt_adr]
+                    # 施加反重力
+                    state.data.qvel[dof_adr : dof_adr+6] = 0
+                    state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+
+            # 3. 虛空救援
             for i in range(state.model.nbody):
                 jnt_adr = state.model.body_jntadr[i]
                 if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:

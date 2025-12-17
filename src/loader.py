@@ -199,3 +199,97 @@ def update_body_xml(xml_path, body_name, pos, quat):
     except Exception as e:
         print(f"[loader] Update XML Error: {e}")
         return False
+    
+    # ==== [新功能] 新增燈光 ====
+def add_light_to_scene(xml_path, spawn_pos="0 0 3"):
+    """在場景中新增一個可移動的點光源"""
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        worldbody = root.find("worldbody")
+        
+        # 1. 產生唯一名稱
+        base_name = "point_light"
+        unique_name = base_name
+        k = 1
+        while any(b.get("name") == unique_name for b in worldbody.findall("body")):
+            unique_name = f"{base_name}_{k}"
+            k += 1
+            
+        print(f"[loader] Creating light: {unique_name}")
+        
+        # 2. 建立 Body 結構
+        # 結構: Body -> [FreeJoint, Light, Visual Geom]
+        light_body = ET.SubElement(worldbody, "body", {
+            "name": unique_name,
+            "pos": spawn_pos
+        })
+        
+        ET.SubElement(light_body, "joint", {
+            "type": "free",
+            "name": f"{unique_name}_joint"
+        })
+        
+        # 光源本體 (castshadow="true" 開啟陰影)
+        ET.SubElement(light_body, "light", {
+            "mode": "trackcom", # 光源跟隨 body
+            "diffuse": "0.8 0.8 0.8",
+            "specular": "0.3 0.3 0.3",
+            "castshadow": "true",
+            "dir": "0 0 -1" # 預設向下
+        })
+        
+        # 視覺化球體 (代表燈泡) - 不參與碰撞 (contype=0)
+        ET.SubElement(light_body, "geom", {
+            "type": "sphere",
+            "size": "0.1",
+            "rgba": "1 1 0.8 0.8", # 微黃色半透明
+            "contype": "0",
+            "conaffinity": "0",
+            "group": "1" # 分組以便過濾
+        })
+        
+        global LAST_IMPORTED_BODY_NAME
+        LAST_IMPORTED_BODY_NAME = unique_name
+        
+        if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
+        tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+        return True
+        
+    except Exception as e:
+        print(f"[loader] Add Light Error: {e}")
+        return False
+
+# ==== [新功能] 更新燈光顏色 ====
+def update_light_xml(xml_path, body_name, rgb):
+    """更新 XML 中燈光的顏色"""
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        worldbody = root.find("worldbody")
+        
+        found = False
+        for body in worldbody.findall("body"):
+            if body.get("name") == body_name:
+                light = body.find("light")
+                if light is not None:
+                    rgb_str = f"{rgb[0]:.3f} {rgb[1]:.3f} {rgb[2]:.3f}"
+                    light.set("diffuse", rgb_str)
+                    light.set("specular", f"{rgb[0]*0.5:.3f} {rgb[1]*0.5:.3f} {rgb[2]*0.5:.3f}") # Specular 自動減半
+                    
+                    # 同步更新視覺球體的顏色
+                    geom = body.find("geom")
+                    if geom is not None:
+                        geom.set("rgba", f"{rgb[0]} {rgb[1]} {rgb[2]} 0.8")
+                        
+                    found = True
+                break
+        
+        if found:
+            if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
+            tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+            return True
+        return False
+    except Exception as e:
+        print(f"[loader] Update Light Error: {e}")
+        return False

@@ -4,15 +4,16 @@
   <asset>
     <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".8 .8 .8" />
     <material name="grid_mat" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2" />
-    
-    </asset>
+  </asset>
 
   <worldbody>
-    <light pos="0 0 10" dir="0 0 -1" diffuse="0.8 0.8 0.8" />
-    
     <geom name="floor" type="plane" size="10 10 .1" material="grid_mat" />
 
+    <body name="default_light" pos="0 0 4">
+        <joint type="free" name="default_light_joint"/>
+        <light mode="trackcom" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3" castshadow="true" dir="0 0 -1"/>
+        <geom type="sphere" size="0.1" rgba="1 1 0.8 0.5" contype="0" conaffinity="0" group="1"/>
+    </body>
 
- 
   </worldbody>
 </mujoco>

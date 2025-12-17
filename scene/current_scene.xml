@@ -9,9 +9,13 @@
     <mesh file="D:/Research/CG/Final/Assets/obj/basemodule_A/basemodule_A.obj" name="basemodule_A" />
   </asset>
   <worldbody>
-    <light pos="0 0 10" dir="0 0 -1" diffuse="0.8 0.8 0.8" />
     <geom name="floor" type="plane" size="10 10 .1" material="grid_mat" />
-    <body name="basemodule_A" pos="-4.0000 1.0000 0.9971" quat="0.3329 -0.3329 0.6238 -0.6238">
+    <body name="default_light" pos="4.5000 -2.0000 2.4500" quat="1.0000 0.0000 0.0000 0.0000">
+      <joint type="free" name="default_light_joint" />
+      <light mode="trackcom" diffuse="1.000 1.000 1.000" specular="0.500 0.500 0.500" castshadow="true" dir="0 0 -1" />
+      <geom type="sphere" size="0.1" rgba="1.0 1.0 1.0 0.8" contype="0" conaffinity="0" group="1" />
+    </body>
+    <body name="basemodule_A" pos="-1.5000 -1.0000 1.0000" quat="0.3327 -0.3327 0.6239 -0.6239">
       <geom material="spacebits_texture" mesh="basemodule_A" group="2" type="mesh" contype="1" conaffinity="1" />
       <geom mesh="basemodule_A" group="3" type="mesh" contype="1" conaffinity="1" rgba="0.9 0.9 0.9 1" />
       <joint type="free" name="basemodule_A_freejoint" />
