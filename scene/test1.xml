@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="My Final Project">
+  <option timestep="0.002" gravity="0 0 -9.81" />
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".8 .8 .8" />
+    <material name="grid_mat" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2" />
+    <texture type="2d" name="spacebits_texture" file="D:/Research/CG/Final/Assets/obj/basemodule_A/spacebits_texture.png" />
+    <material name="spacebits_texture" texture="spacebits_texture" specular="0.5" shininess="0.15999998099999999" />
+    <mesh file="D:/Research/CG/Final/Assets/obj/basemodule_A/basemodule_A.obj" name="basemodule_A" />
+  </asset>
+  <worldbody>
+    <light pos="0 0 10" dir="0 0 -1" diffuse="0.8 0.8 0.8" />
+    <geom name="floor" type="plane" size="10 10 .1" material="grid_mat" />
+    <body name="basemodule_A" pos="-2.5002 0.0002 0.9999" quat="0.3427 -0.3554 0.1419 0.8580">
+      <geom material="spacebits_texture" mesh="basemodule_A" group="2" type="mesh" contype="1" conaffinity="1" />
+      <geom mesh="basemodule_A" group="3" type="mesh" contype="1" conaffinity="1" rgba="0.9 0.9 0.9 1" />
+      <joint type="free" name="basemodule_A_freejoint" />
+    </body>
+  </worldbody>
+</mujoco>
