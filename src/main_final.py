@@ -20,19 +20,17 @@ from src.utils import euler2quat, quat2euler, save_simulation_state, restore_sim
 from src.managers import ScaleManager, PlacementManager, HistoryManager
 from src.gui import ControlPanel
 # [新增] 引入初始化模組
-from src.initializer import initialize_project 
+from src.initializer import initialize_project
 
 # --- Setup ---
 if getattr(sys, 'frozen', False):
     os.chdir(os.path.dirname(sys.executable))
 
-# ==== [修改] 使用 initialize_project 自動取得並修復路徑 ====
-# 這行會自動產生 defaultscene/main_scene.xml (如果不存在)
-# 並確保 scene/current_scene.xml 存在
 BASE_XML_PATH, CURRENT_SCENE_XML = initialize_project()
 
 GRID_SIZE = 0.5
 active_xml_path = CURRENT_SCENE_XML
+
 # --- Global State ---
 class EditorState:
     def __init__(self):
@@ -46,6 +44,7 @@ class EditorState:
         self.gui = None
         self.current_z_height = 0.0
         self.is_light_selected = False
+        self.listbox_body_ids = [] # [New] 列表索引對應的 body id
 
 state = EditorState()
 
@@ -54,6 +53,40 @@ scale_mgr = ScaleManager()
 pm = PlacementManager()
 
 # --- Helper Functions ---
+def refresh_object_list_ui():
+    """刷新 GUI 的物件列表 (過濾掉 World 和 Light)"""
+    if not state.model or not state.gui: return
+    
+    names = []
+    state.listbox_body_ids = []
+    
+    for i in range(state.model.nbody):
+        # 跳過 world (id 0)
+        if i == 0: continue
+        
+        # 跳過燈光 (檢查 light_bodyid 列表)
+        is_light = False
+        for l in range(state.model.nlight):
+            if state.model.light_bodyid[l] == i:
+                is_light = True
+                break
+        if is_light: continue
+        
+        # 取得名稱
+        name = mujoco.mj_id2name(state.model, mujoco.mjtObj.mjOBJ_BODY, i)
+        if not name: name = f"Body {i}"
+        
+        names.append(name)
+        state.listbox_body_ids.append(i)
+        
+    state.gui.update_object_list(names)
+
+def on_gui_list_select(index):
+    """當點選列表時觸發"""
+    if 0 <= index < len(state.listbox_body_ids):
+        body_id = state.listbox_body_ids[index]
+        select_object_by_id(body_id)
+
 def load_model(restore=True):
     print(f"[System] Reloading model... (Restore={restore})")
     old_state = save_simulation_state(state.model, state.data) if restore else None
@@ -71,6 +104,9 @@ def load_model(restore=True):
         state.selected_qpos_adr = -1
         state.is_light_selected = False
         
+        # [New] 載入後刷新列表
+        refresh_object_list_ui()
+        
         return state.model, state.data
     except Exception as e: 
         print(f"Error loading: {e}")
@@ -80,13 +116,32 @@ history = HistoryManager(reload_callback=load_model)
 
 # --- Action Helpers ---
 def get_light_idx_for_body(body_id):
-    """[Fix] Helper to find light index for a given body"""
     if state.model is None: return -1
-    # model.light_bodyid 是一個陣列，存著每個 light 對應的 body id
     for i in range(state.model.nlight):
         if state.model.light_bodyid[i] == body_id:
             return i
     return -1
+
+# [新增] 封裝一個通用的「結束當前選取」邏輯
+def finalize_active_object():
+    """嘗試結束當前物體的編輯。回傳 True 表示成功結束，False 表示異常。"""
+    if pm.active_body_id == -1: return True
+
+    if pm.is_valid:
+        # 1. 合法 -> 確認並存檔
+        confirm_current_placement()
+    else:
+        # 2. 非法 -> 放棄修改，彈回原點
+        print(f"[Auto-Revert] Body {pm.active_body_id} overlap. Reverting...")
+        pm.revert_placement(state.model, state.data)
+        if state.gui: state.gui.set_status("⚠️ Overlap detected! Reverted.")
+        
+        # 清除選取狀態
+        state.selected_body_id = -1
+        state.selected_qpos_adr = -1
+        state.is_light_selected = False
+        
+    return True
 
 # --- Actions ---
 def open_scene():
@@ -105,8 +160,7 @@ def import_obj_workflow(obj_path=None):
 
     try:
         if state.gui: state.gui.set_status("Importing...")
-        if pm.active_body_id != -1: confirm_current_placement()
-
+        finalize_active_object()
         history.push_state(active_xml_path, state.model, state.data)
 
         mjcf_path = convert_obj_with_obj2mjcf(obj_path)
@@ -116,6 +170,9 @@ def import_obj_workflow(obj_path=None):
         state.data = mujoco.MjData(state.model)
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+        
+        # [New] 匯入後刷新列表
+        refresh_object_list_ui()
         
         if LAST_IMPORTED_BODY_NAME:
             bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
@@ -128,7 +185,7 @@ def import_obj_workflow(obj_path=None):
 def add_light_workflow():
     try:
         if state.gui: state.gui.set_status("Adding Light...")
-        if pm.active_body_id != -1: confirm_current_placement()
+        finalize_active_object()
 
         history.push_state(active_xml_path, state.model, state.data)
         
@@ -146,7 +203,6 @@ def add_light_workflow():
 def update_light_color_from_gui(r, g, b):
     if state.selected_body_id == -1 or not state.is_light_selected: return
     
-    # [Fix] 使用 helper 尋找 light index
     light_idx = get_light_idx_for_body(state.selected_body_id)
     
     if light_idx >= 0:
@@ -208,20 +264,23 @@ def perform_undo():
     state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
     state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
     pm.active_body_id = -1
+    # [New] Undo 後刷新列表
+    refresh_object_list_ui()
 
 def perform_redo():
     history.redo(active_xml_path, state.model, state.data)
     pm.active_body_id = -1
+    # [New] Redo 後刷新列表
+    refresh_object_list_ui()
 
 # --- Interaction ---
 def select_object_by_id(body_id):
     if pm.active_body_id != -1 and pm.active_body_id != body_id:
-        confirm_current_placement()
+        finalize_active_object()
 
     state.selected_body_id = body_id
     jntadr = state.model.body_jntadr[body_id]
     
-    # [Fix] 檢查是否為燈光 (使用 helper)
     state.is_light_selected = (get_light_idx_for_body(body_id) != -1)
     
     if jntadr >= 0:
@@ -239,7 +298,15 @@ def select_object_by_id(body_id):
             rgb = state.model.light_diffuse[light_idx]
             state.gui.set_light_values(rgb[0], rgb[1], rgb[2])
             
-        pm.start_placement(state.model, body_id)
+        # [New] 同步列表選擇狀態
+        if body_id in state.listbox_body_ids:
+            idx = state.listbox_body_ids.index(body_id)
+            if state.gui: state.gui.select_list_item(idx)
+        else:
+            if state.gui: state.gui.select_list_item(-1)
+            
+        # [Updated] 這裡傳入 state.data 讓 PM 記錄初始位置
+        pm.start_placement(state.model, state.data, body_id)
     else: state.selected_qpos_adr = -1
 
 def update_transform_from_gui(z, s, r, p, y):
@@ -330,6 +397,7 @@ def main():
     glfw.make_context_current(window)
     state.window = window
 
+    # 傳入新增的 callback
     state.gui = ControlPanel(
         load_cb=import_obj_workflow, 
         open_cb=open_scene, 
@@ -340,9 +408,11 @@ def main():
         delete_cb=delete_selected_object, 
         save_cb=save_scene_as, 
         undo_cb=perform_undo, 
-        redo_cb=perform_redo
+        redo_cb=perform_redo,
+        list_select_cb=on_gui_list_select # [New]
     )
 
+    # ==== 必須手動載入一次空場景 ====
     if os.path.exists(active_xml_path):
         print("[Main] Loading initial scene...")
         load_model(restore=False)
@@ -376,14 +446,12 @@ def main():
                         state.data.qvel[dof_adr : dof_adr+6] = 0
                         state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
             
-            # 2. [Fix] 永遠凍結燈光 (改用 light_bodyid 遍歷)
+            # 2. 永遠凍結燈光
             for i in range(state.model.nlight):
                 body_id = state.model.light_bodyid[i]
-                # 確保這個 Body 是可移動的 Free Joint Body
                 jnt_adr = state.model.body_jntadr[body_id]
                 if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
                     dof_adr = state.model.jnt_dofadr[jnt_adr]
-                    # 施加反重力
                     state.data.qvel[dof_adr : dof_adr+6] = 0
                     state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
 

@@ -4,14 +4,34 @@
   <asset>
     <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".8 .8 .8" />
     <material name="grid_mat" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2" />
+    <texture type="2d" name="spacebits_texture" file="D:/Research/CG/Final/Assets/obj/basemodule_A/spacebits_texture.png" />
+    <material name="spacebits_texture" texture="spacebits_texture" specular="0.5" shininess="0.15999998099999999" />
+    <mesh file="D:/Research/CG/Final/Assets/obj/basemodule_A/basemodule_A.obj" name="basemodule_A" />
+    <texture type="2d" name="basemodule_C_spacebits_texture" file="D:/Research/CG/Final/Assets/imported_mjcf/basemodule_C/spacebits_texture.png" />
+    <material name="basemodule_C_spacebits_texture" texture="basemodule_C_spacebits_texture" specular="0.50196078" shininess="0.15999998099999999" />
+    <mesh file="D:/Research/CG/Final/Assets/imported_mjcf/basemodule_C/basemodule_C.obj" name="basemodule_C_basemodule_C" />
+    <texture type="2d" name="rocks_B_spacebits_texture" file="D:/Research/CG/Final/Assets/imported_mjcf/rocks_B/spacebits_texture.png" />
+    <material name="rocks_B_spacebits_texture" texture="rocks_B_spacebits_texture" specular="0.50196078" shininess="0.15999998099999999" />
+    <mesh file="D:/Research/CG/Final/Assets/imported_mjcf/rocks_B/rocks_B.obj" name="rocks_B_rocks_B" />
+    <mesh file="D:/Research/CG/Final/Assets/imported_mjcf/rocks_B/rocks_B.obj" name="rocks_B_rocks_B_1" />
   </asset>
   <worldbody>
     <light pos="0 0 10" dir="0 0 -1" diffuse="0.8 0.8 0.8" />
     <geom name="floor" type="plane" size="10 10 .1" material="grid_mat" />
-    <body name="default_light" pos="0.0000 0.0000 3.0000" quat="1.0000 0.0000 0.0000 0.0000">
-      <joint type="free" name="default_light_joint" />
-      <light mode="trackcom" diffuse="0.000 1.000 0.000" specular="0.000 0.500 0.000" castshadow="true" dir="0 0 -1" />
-      <geom type="sphere" size="0.1" rgba="0.0 1.0 0.0 0.8" contype="0" conaffinity="0" group="1" />
+    <body name="basemodule_A" pos="-2.5121 0.0153 0.9999" quat="0.3372 -0.3563 0.1397 0.8602">
+      <geom material="spacebits_texture" mesh="basemodule_A" group="2" type="mesh" contype="1" conaffinity="1" />
+      <geom mesh="basemodule_A" group="3" type="mesh" contype="1" conaffinity="1" rgba="0.9 0.9 0.9 1" />
+      <joint type="free" name="basemodule_A_freejoint" />
+    </body>
+    <body name="basemodule_C" pos="-2.0012 -4.0005 -0.0000" quat="0.6783 0.6783 -0.1999 -0.1999">
+      <geom material="basemodule_C_spacebits_texture" mesh="basemodule_C_basemodule_C" group="2" type="mesh" contype="1" conaffinity="1" />
+      <geom mesh="basemodule_C_basemodule_C" group="3" type="mesh" contype="1" conaffinity="1" rgba="0.9 0.9 0.9 1" />
+      <joint type="free" name="basemodule_C_freejoint" />
+    </body>
+    <body name="rocks_B" pos="0 0 0.5">
+      <geom material="rocks_B_spacebits_texture" mesh="rocks_B_rocks_B_1" group="2" type="mesh" contype="1" conaffinity="1" />
+      <geom mesh="rocks_B_rocks_B_1" group="3" type="mesh" contype="1" conaffinity="1" rgba="0.9 0.9 0.9 1" />
+      <joint type="free" name="rocks_B_freejoint" />
     </body>
   </worldbody>
 </mujoco>

@@ -2,54 +2,45 @@
 import tkinter as tk
 
 class ControlPanel:
-    def __init__(self, load_cb, open_cb, add_light_cb, rot_cb, light_color_cb, confirm_cb, delete_cb, save_cb, undo_cb, redo_cb):
+    def __init__(self, load_cb, open_cb, add_light_cb, rot_cb, light_color_cb, confirm_cb, delete_cb, save_cb, undo_cb, redo_cb, list_select_cb):
         self.root = tk.Tk()
         self.root.title("Control Panel")
-        self.root.geometry("360x800") # 寬度稍微加寬，高度設為固定
+        self.root.geometry("360x900")
         self.root.configure(bg="#f0f0f0")
         self.root.attributes("-topmost", True)
+        
+        # 保存 callback
+        self.list_select_cb = list_select_cb
 
-        # ==== [新增] 滾動條容器設置 ====
-        # 1. 建立外層 Frame
+        # ==== 滾動條容器設置 ====
         main_frame = tk.Frame(self.root, bg="#f0f0f0")
         main_frame.pack(fill="both", expand=True)
 
-        # 2. 建立 Canvas (用於滾動)
         self.canvas = tk.Canvas(main_frame, bg="#f0f0f0", highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
 
-        # 3. 建立 Scrollbar
         scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=self.canvas.yview)
         scrollbar.pack(side="right", fill="y")
 
-        # 4. 綁定 Canvas 與 Scrollbar
         self.canvas.configure(yscrollcommand=scrollbar.set)
 
-        # 5. 建立實際內容的 Frame (所有按鈕都放這裡)
         self.content_frame = tk.Frame(self.canvas, bg="#f0f0f0")
-        
-        # 將內容 Frame 放入 Canvas 視窗中
         self.canvas_window = self.canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
 
-        # 6. 事件綁定：更新滾動區域
         def on_frame_configure(event):
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         
         def on_canvas_configure(event):
-            # 讓內容寬度跟隨視窗寬度調整
             self.canvas.itemconfig(self.canvas_window, width=event.width)
 
         self.content_frame.bind("<Configure>", on_frame_configure)
         self.canvas.bind("<Configure>", on_canvas_configure)
 
-        # 7. 滑鼠滾輪綁定
         def _on_mousewheel(event):
             self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        
-        # 全域綁定滾輪 (只要滑鼠在程式上就能滾動)
         self.root.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # ==== 介面內容 (注意 parent 改成 self.content_frame) ====
+        # ==== 介面內容 ====
 
         tk.Label(self.content_frame, text="Furniture Placer", font=("Arial", 16, "bold"), bg="#f0f0f0").pack(pady=10)
 
@@ -64,6 +55,23 @@ class ControlPanel:
         frame_add.pack(fill="x", padx=10, pady=5)
         tk.Button(frame_add, text="➕ Add OBJ (I)", command=load_cb, bg="#e1e1e1", height=2).pack(fill="x", pady=2)
         tk.Button(frame_add, text="💡 Add Point Light", command=add_light_cb, bg="#ffecb3").pack(fill="x", pady=2)
+
+        # [新增] Scene Objects List (物件列表)
+        frame_list = tk.LabelFrame(self.content_frame, text="Scene Objects", padx=10, pady=10, bg="#f0f0f0")
+        frame_list.pack(fill="x", padx=10, pady=5)
+        
+        lb_frame = tk.Frame(frame_list, bg="#f0f0f0")
+        lb_frame.pack(fill="x")
+        
+        self.lb_scroll = tk.Scrollbar(lb_frame, orient="vertical")
+        self.lb_obj = tk.Listbox(lb_frame, height=6, exportselection=False, yscrollcommand=self.lb_scroll.set)
+        self.lb_scroll.config(command=self.lb_obj.yview)
+        
+        self.lb_obj.pack(side="left", fill="x", expand=True)
+        self.lb_scroll.pack(side="right", fill="y")
+        
+        # 綁定選擇事件
+        self.lb_obj.bind("<<ListboxSelect>>", self.on_list_select)
 
         # History
         frame_hist = tk.LabelFrame(self.content_frame, text="History", padx=10, pady=10, bg="#f0f0f0")
@@ -122,6 +130,25 @@ class ControlPanel:
 
         self.lbl_status = tk.Label(self.content_frame, text="Ready", bd=1, relief=tk.SUNKEN, anchor="w")
         self.lbl_status.pack(side="bottom", fill="x", pady=(20, 0))
+
+    def on_list_select(self, event):
+        sel = self.lb_obj.curselection()
+        if sel:
+            index = sel[0]
+            self.list_select_cb(index)
+
+    def update_object_list(self, names):
+        """更新列表內容"""
+        self.lb_obj.delete(0, tk.END)
+        for name in names:
+            self.lb_obj.insert(tk.END, name)
+
+    def select_list_item(self, index):
+        """程式控制選擇某個項目"""
+        self.lb_obj.selection_clear(0, tk.END)
+        if index != -1:
+            self.lb_obj.selection_set(index)
+            self.lb_obj.see(index) # 確保捲動到可見
 
     def update_gui_state(self, is_placing, is_valid, has_selection, is_light_selected):
         if is_placing:

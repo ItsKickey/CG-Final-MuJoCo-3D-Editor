@@ -120,12 +120,28 @@ class HistoryManager:
 # --- Placement ---
 class PlacementManager:
     def __init__(self):
-        self.active_body_id = -1; self.is_valid = False
-        self.original_rgba = {}; self.original_contype = {}; self.original_conaffinity = {}
+        self.active_body_id = -1
+        self.is_valid = False
+        self.original_rgba = {}
+        self.original_contype = {}
+        self.original_conaffinity = {}
+        # [New] 用來存移動前的初始狀態
+        self.initial_qpos = None 
 
-    def start_placement(self, model, body_id):
-        if self.active_body_id != -1: self.confirm_placement(model)
+    def start_placement(self, model, data, body_id): # [Updated] 多了 data 參數
+        # 如果有上一個還沒放好，先確認 (邏輯由 main 控制，但這裡做防禦)
+        if self.active_body_id != -1: 
+            pass 
+
         self.active_body_id = body_id
+        
+        # [New] 記錄初始狀態 (Pos 3 + Quat 4 = 7)
+        jnt_adr = model.body_jntadr[body_id]
+        if jnt_adr >= 0:
+            qpos_adr = model.jnt_qposadr[jnt_adr]
+            self.initial_qpos = data.qpos[qpos_adr : qpos_adr+7].copy()
+        
+        # 暫存外觀與碰撞屬性，並將其暫時關閉碰撞 (變鬼魂)
         self.original_rgba.clear(); self.original_contype.clear(); self.original_conaffinity.clear()
         geoms = get_body_geoms(model, body_id)
         for gid in geoms:
@@ -151,11 +167,35 @@ class PlacementManager:
         target_color = np.array([0.0, 1.0, 0.0, 0.5]) if self.is_valid else np.array([1.0, 0.0, 0.0, 0.5])
         for gid in my_geoms: model.geom_rgba[gid] = target_color
 
-    def confirm_placement(self, model):
-        if self.active_body_id == -1: return
+    def _cleanup_visuals(self, model):
+        """還原物體的外觀與碰撞屬性"""
         geoms = get_body_geoms(model, self.active_body_id)
         for gid in geoms:
             if gid in self.original_rgba: model.geom_rgba[gid] = self.original_rgba[gid]
             if gid in self.original_contype: model.geom_contype[gid] = self.original_contype[gid]
             if gid in self.original_conaffinity: model.geom_conaffinity[gid] = self.original_conaffinity[gid]
-        self.active_body_id = -1; self.original_rgba.clear()
+        self.original_rgba.clear()
+
+    def confirm_placement(self, model):
+        """確認放置 (位置已由外部更新到 XML)"""
+        if self.active_body_id == -1: return
+        self._cleanup_visuals(model)
+        self.active_body_id = -1
+        self.initial_qpos = None
+
+    def revert_placement(self, model, data):
+        """[New] 取消放置：還原到初始位置"""
+        if self.active_body_id != -1 and self.initial_qpos is not None:
+            # 還原物理座標
+            jnt_adr = model.body_jntadr[self.active_body_id]
+            if jnt_adr >= 0:
+                qpos_adr = model.jnt_qposadr[jnt_adr]
+                data.qpos[qpos_adr : qpos_adr+7] = self.initial_qpos.copy()
+            
+            # 還原外觀 (與 confirm 相同邏輯)
+            self._cleanup_visuals(model)
+            
+            self.active_body_id = -1
+            self.initial_qpos = None
+            return True
+        return False
