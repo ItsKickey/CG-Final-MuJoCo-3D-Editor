@@ -3,10 +3,17 @@ import subprocess
 import shutil
 import os
 from pathlib import Path
+import sys
 import xml.etree.ElementTree as ET
 
 # 定義匯入後的統一存放路徑
-PROJECT_ROOT = Path(__file__).parent.parent
+if getattr(sys, 'frozen', False):
+    # 如果是打包後的 EXE，根目錄應該是執行檔 (.exe) 所在的資料夾
+    PROJECT_ROOT = Path(sys.executable).parent
+else:
+    # 如果是開發模式 (python main.py)，保持原樣
+    PROJECT_ROOT = Path(__file__).parent.parent
+
 
 # [修改] 將路徑改為根目錄下的 "Import_mjcf"
 IMPORT_DEST_DIR = PROJECT_ROOT / "Import_mjcf" 

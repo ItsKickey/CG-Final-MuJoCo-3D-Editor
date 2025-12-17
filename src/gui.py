@@ -57,7 +57,7 @@ class ControlPanel:
         tk.Button(frame_add, text="➕ Add OBJ (I)", command=load_cb, bg="#e1e1e1", height=2).pack(fill="x", pady=2)
         tk.Button(frame_add, text="💡 Add Point Light", command=add_light_cb, bg="#ffecb3").pack(fill="x", pady=2)
 
-        # [新增] Scene Objects List (物件列表)
+        # Scene Objects List (物件列表)
         frame_list = tk.LabelFrame(self.content_frame, text="Scene Objects", padx=10, pady=10, bg="#f0f0f0")
         frame_list.pack(fill="x", padx=10, pady=5)
         
@@ -96,7 +96,7 @@ class ControlPanel:
         
         tk.Label(frame_phys, text="Gravity Z (Input + Enter):", bg="#f0f0f0").pack(anchor="w")
         
-        # 使用 DoubleVar 綁定數值，預設為 9.81
+        #Gravity 預設為 9.81
         self.var_grav = tk.DoubleVar(value=9.81) 
         
         # 建立 Entry 輸入框

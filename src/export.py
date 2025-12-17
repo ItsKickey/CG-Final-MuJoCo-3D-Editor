@@ -1,6 +1,7 @@
 # src/export.py
 import os
 import shutil
+import sys
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -15,7 +16,12 @@ def export_project_to_zip(active_xml_path, scene_name):
     
     # 1. 準備路徑
     # 假設 export.py 在 src/ 下，往上兩層是專案根目錄
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if getattr(sys, 'frozen', False):
+        # 打包後，根目錄是執行檔 (.exe) 所在的資料夾
+        project_root = os.path.dirname(sys.executable)
+    else:
+        # 開發模式，根目錄是 src/ 的上一層
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = os.path.join(project_root, "outputfile")
     
     if not os.path.exists(output_dir): 

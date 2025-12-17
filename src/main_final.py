@@ -335,7 +335,7 @@ def pick_object(window, xpos, ypos):
         if pm.active_body_id != -1: cancel_active_object()
         return
     
-    # [新增] 防止選到 SkyDome (Group 4)
+    #  防止選到 SkyDome (Group 4)
     if state.model.geom_group[geom_id] == 4:
         return
 
@@ -527,6 +527,6 @@ def main():
     # 迴圈結束後的清理
     state.gui.root.quit()
     glfw.terminate()
-    
+
 if __name__ == "__main__":
     main()

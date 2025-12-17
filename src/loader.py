@@ -54,15 +54,15 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
             if geom_node is not None:
                 class_defaults[cls] = geom_node.attrib
 
-    # [關鍵修改] 將路徑轉換為相對路徑
+    #  將路徑轉換為相對路徑
     def fix_asset_path(node, attr_name):
         filename = node.get(attr_name)
         if not filename: return
         
-        # 1. 先還原出該檔案的絕對路徑 (它原本是相對於 obj_xml 的)
+        # 還原出該檔案的絕對路徑 
         abs_path = os.path.join(obj_dir, filename)
         
-        # 2. 如果檔案不存在，嘗試在父目錄找 (obj2mjcf 的一些行為)
+        # 如果檔案不存在，嘗試在父目錄找 (obj2mjcf 的一些行為)
         if not os.path.exists(abs_path):
             parent_dir = os.path.dirname(obj_dir)
             alt_path = os.path.join(parent_dir, filename)
@@ -77,7 +77,6 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
     for mesh in obj_root.findall(".//mesh"): fix_asset_path(mesh, "file")
     for tex in obj_root.findall(".//texture"): fix_asset_path(tex, "file")
 
-    # --- 以下保持不變 ---
     main_asset = main_root.find("asset")
     if main_asset is None: main_asset = ET.SubElement(main_root, "asset")
     
