@@ -161,30 +161,56 @@ def _import_obj_workflow_logic(obj_path=None):
     try:
         if state.gui: state.gui.set_status("Importing...")
         
-        # [修改] 匯入前，如果還沒 Confirm，直接 Revert 上一個
+        # 1. 確保上一個物體已經結束編輯 (Cancel)
         cancel_active_object()
 
+        # 2. 記錄匯入前的狀態 (Undo用)
         history.push_state(active_xml_path, state.model, state.data)
+        
+        # 3. 轉檔與載入
         mjcf_path = convert_obj_with_obj2mjcf(obj_path)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 0.5
-        state.model = load_scene_with_object(active_xml_path, str(mjcf_path), spawn_height=spawn_h, save_merged_xml=active_xml_path)
         
+        # 載入新場景 (這會更新 LAST_IMPORTED_BODY_NAME)
+        state.model = load_scene_with_object(active_xml_path, str(mjcf_path), spawn_height=spawn_h, save_merged_xml=active_xml_path)
         state.data = mujoco.MjData(state.model)
         mujoco.mj_forward(state.model, state.data)
+        
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         
         refresh_object_list_ui()
         
+        # 4. [關鍵修正] 強制選取剛匯入的物體
+        target_bid = -1
+        
+        # 嘗試 A: 從 loader 變數抓取
         if LAST_IMPORTED_BODY_NAME:
-            bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
-            if bid >= 0:
-                select_object_by_id(bid)
-                if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
-                state.cam.lookat = state.data.body_xpos[bid].copy()
-                state.cam.distance = 5.0 
+            target_bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
+        
+        # 嘗試 B: 如果 A 失敗，直接抓最後一個物體 (通常新物體會在最後)
+        if target_bid < 0 and state.model.nbody > 1:
+            target_bid = state.model.nbody - 1
+            
+        # 5. 執行選取與進入編輯模式
+        if target_bid >= 0:
+            # 這會呼叫 pm.start_placement -> 關閉碰撞 (變綠/紅)
+            select_object_by_id(target_bid)
+            
+            if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
+            
+            # 將鏡頭對準新物體
+            state.cam.lookat = state.data.body_xpos[target_bid].copy()
+            state.cam.distance = 5.0
+            
+            # [雙重保險] 再次強制更新一次 GUI 和 PM 狀態，確保它是紅色/綠色而不是實體
+            pm.update(state.model, state.data)
+            
     except Exception as e:
-        print(e); import traceback; traceback.print_exc()
+        print(f"Import Error: {e}")
+        import traceback; traceback.print_exc()
+        if state.gui: state.gui.set_status("Import Failed!")
+        load_model(restore=False)
 
 def _add_light_workflow_logic():
     try:
