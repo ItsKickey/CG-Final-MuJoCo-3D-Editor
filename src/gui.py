@@ -2,7 +2,7 @@
 import tkinter as tk
 
 class ControlPanel:
-    def __init__(self, load_cb, open_cb, add_light_cb, rot_cb, light_color_cb, confirm_cb, delete_cb, save_cb, undo_cb, redo_cb, list_select_cb,floor_cb,gravity_cb):
+    def __init__(self, load_cb, open_cb, add_light_cb, rot_cb, light_color_cb, confirm_cb, delete_cb, save_cb, undo_cb, redo_cb, list_select_cb,floor_cb,gravity_cb,export_cb):
         self.root = tk.Tk()
         self.root.title("Control Panel")
         self.root.geometry("360x900")
@@ -50,7 +50,7 @@ class ControlPanel:
         tk.Button(frame_file, text="📂 Open Scene...", command=open_cb, bg="#e1e1e1").pack(fill="x", pady=2)
         tk.Button(frame_file, text="💾 Save Scene As...", command=save_cb, bg="#ccf").pack(fill="x", pady=2)
         tk.Button(frame_file, text="🖼️ Change Floor Texture", command=floor_cb, bg="#d9d9f3").pack(fill="x", pady=2)
-        
+        tk.Button(frame_file, text="📦 Export Project (Zip)", command=export_cb, bg="#b3e5fc").pack(fill="x", pady=2)
         # Add Object
         frame_add = tk.LabelFrame(self.content_frame, text="Add", padx=10, pady=10, bg="#f0f0f0")
         frame_add.pack(fill="x", padx=10, pady=5)

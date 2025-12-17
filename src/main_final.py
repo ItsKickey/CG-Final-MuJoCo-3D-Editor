@@ -6,7 +6,7 @@ import os
 import sys
 import math
 import shutil
-from tkinter import filedialog
+from tkinter import filedialog,simpledialog
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -20,7 +20,7 @@ from src.utils import euler2quat, quat2euler, save_simulation_state, restore_sim
 from src.managers import ScaleManager, PlacementManager, HistoryManager
 from src.gui import ControlPanel
 from src.initializer import initialize_project
-
+from src.export import export_project_to_zip
 # --- Setup ---
 if getattr(sys, 'frozen', False):
     os.chdir(os.path.dirname(sys.executable))
@@ -115,6 +115,30 @@ def cancel_active_object():
     return False
 
 # --- Logic Functions (維持不變) ---
+def _export_project_logic():
+    # 1. 彈出輸入視窗
+    scene_name = simpledialog.askstring("Export Project", "Enter Scene Name:\n(Files will be saved to outputfile/Name.zip)")
+    if not scene_name: return 
+
+    # 2. 檔名過濾 (只允許英數與底線)
+    valid_name = "".join(c for c in scene_name if c.isalnum() or c in (' ', '_', '-')).strip()
+    if not valid_name: 
+        if state.gui: state.gui.set_status("Invalid Name!")
+        return
+
+    try:
+        if state.gui: state.gui.set_status("Exporting Zip...")
+        
+        # 3. 呼叫 export.py 的函式
+        zip_path = export_project_to_zip(active_xml_path, valid_name)
+        
+        if state.gui: state.gui.set_status(f"Exported: {os.path.basename(zip_path)}")
+        print(f"[System] Exported to: {zip_path}")
+        
+    except Exception as e:
+        print(f"Export Error: {e}")
+        import traceback; traceback.print_exc()
+        if state.gui: state.gui.set_status("Export Failed!")
 def _change_floor_workflow_logic():
     img_path = filedialog.askopenfilename(title="Select Floor Image", filetypes=[("Images", "*.png;*.jpg;*.jpeg")])
     if not img_path: return
@@ -242,6 +266,7 @@ def perform_undo(): state.defer(_perform_undo_logic)
 def perform_redo(): state.defer(_perform_redo_logic)
 def confirm_current_placement(): state.defer(_confirm_current_placement_logic)
 def change_floor_workflow(): state.defer(_change_floor_workflow_logic)
+def export_project_workflow(): state.defer(_export_project_logic) 
 
 def save_scene_as(): 
     path = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("XML", "*.xml")])
@@ -401,7 +426,8 @@ def main():
         redo_cb=perform_redo,
         list_select_cb=on_gui_list_select,
         floor_cb=change_floor_workflow,
-        gravity_cb=update_gravity_from_gui
+        gravity_cb=update_gravity_from_gui,
+        export_cb=export_project_workflow
     )
 
     print("[Main] Loading fresh scene...")

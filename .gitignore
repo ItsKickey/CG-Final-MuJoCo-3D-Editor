@@ -8,5 +8,7 @@ Assets
 mujoco-3.3.7-windows-x86_64
 MUJOCO_LOG.TXT
 truth-about-the-dark-side-of-the-moon.zip
-scene/final.xml
+scene
 Import_mjcf
+defaultscene
+outputfile
