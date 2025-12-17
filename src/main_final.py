@@ -6,6 +6,7 @@ import os
 import sys
 import math
 import shutil
+import time # [新增] 用於計時自動儲存
 from tkinter import filedialog,simpledialog
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,7 +14,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.loader import (
     load_scene_with_object, delete_body_from_scene, update_body_xml, 
     add_light_to_scene, update_light_xml, change_floor_texture, 
-     LAST_IMPORTED_BODY_NAME
+    batch_update_bodies_xml, # [新增] 引入批次更新函式
+    LAST_IMPORTED_BODY_NAME
 )
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
@@ -46,6 +48,7 @@ class EditorState:
         self.is_light_selected = False
         self.listbox_body_ids = [] 
         self.pending_tasks = []
+        self.last_auto_save_time = 0 # [新增] 上次自動儲存的時間戳記
 
     def defer(self, func, *args, **kwargs):
         self.pending_tasks.append(lambda: func(*args, **kwargs))
@@ -115,13 +118,11 @@ def cancel_active_object():
         return True
     return False
 
-# --- Logic Functions (維持不變) ---
+# --- Logic Functions ---
 def _export_project_logic():
-    # 1. 彈出輸入視窗
     scene_name = simpledialog.askstring("Export Project", "Enter Scene Name:\n(Files will be saved to outputfile/Name.zip)")
     if not scene_name: return 
 
-    # 2. 檔名過濾 (只允許英數與底線)
     valid_name = "".join(c for c in scene_name if c.isalnum() or c in (' ', '_', '-')).strip()
     if not valid_name: 
         if state.gui: state.gui.set_status("Invalid Name!")
@@ -130,7 +131,9 @@ def _export_project_logic():
     try:
         if state.gui: state.gui.set_status("Exporting Zip...")
         
-        # 3. 呼叫 export.py 的函式
+        # [關鍵修正] 匯出前強制同步一次，確保 ZIP 裡的位置是最新的
+        batch_update_bodies_xml(active_xml_path, state.model, state.data)
+        
         zip_path = export_project_to_zip(active_xml_path, valid_name)
         
         if state.gui: state.gui.set_status(f"Exported: {os.path.basename(zip_path)}")
@@ -140,6 +143,7 @@ def _export_project_logic():
         print(f"Export Error: {e}")
         import traceback; traceback.print_exc()
         if state.gui: state.gui.set_status("Export Failed!")
+
 def _change_floor_workflow_logic():
     img_path = filedialog.askopenfilename(title="Select Floor Image", filetypes=[("Images", "*.png;*.jpg;*.jpeg")])
     if not img_path: return
@@ -168,6 +172,11 @@ def _import_obj_workflow_logic(obj_path=None):
     try:
         if state.gui: state.gui.set_status("Importing...")
         cancel_active_object()
+        
+        # [關鍵修正] 在匯入新物體前，先強制將當前場景的所有物體位置寫入 XML
+        # 這樣當 load_scene_with_object 重新讀取 XML 時，其他物體就不會跳回原位了
+        batch_update_bodies_xml(active_xml_path, state.model, state.data)
+        
         history.push_state(active_xml_path, state.model, state.data)
         
         mjcf_path = convert_obj_with_obj2mjcf(obj_path)
@@ -200,6 +209,10 @@ def _add_light_workflow_logic():
     try:
         if state.gui: state.gui.set_status("Adding Light...")
         cancel_active_object()
+        
+        # [關鍵修正] 新增燈光前也做一次同步
+        batch_update_bodies_xml(active_xml_path, state.model, state.data)
+        
         history.push_state(active_xml_path, state.model, state.data)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 3.0
         if add_light_to_scene(active_xml_path, spawn_pos=f"0 0 {spawn_h}"):
@@ -270,6 +283,8 @@ def change_floor_workflow(): state.defer(_change_floor_workflow_logic)
 def export_project_workflow(): state.defer(_export_project_logic) 
 
 def save_scene_as(): 
+    # [關鍵修正] 另存前也同步一次
+    batch_update_bodies_xml(active_xml_path, state.model, state.data)
     path = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("XML", "*.xml")])
     if path: shutil.copy(active_xml_path, path); state.gui.set_status(f"Saved to {os.path.basename(path)}")
 
@@ -335,7 +350,6 @@ def pick_object(window, xpos, ypos):
         if pm.active_body_id != -1: cancel_active_object()
         return
     
-    #  防止選到 SkyDome (Group 4)
     if state.model.geom_group[geom_id] == 4:
         return
 
@@ -454,11 +468,9 @@ def main():
                 task()
 
             try:
-                # 2. Tkinter 更新 (最關鍵的一步：手動更新，不讓它佔用 GIL)
                 state.gui.root.update_idletasks()
                 state.gui.root.update()
             except Exception:
-                # 如果 Tkinter 視窗被關閉，這裡會報錯，我們就跳出迴圈
                 break
 
             try:
@@ -468,7 +480,6 @@ def main():
                     pm.update(state.model, state.data)
                     state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
                     
-                    # Zero out forces
                     state.data.qfrc_applied[:] = 0 
                     if pm.active_body_id != -1:
                         for i in range(state.model.nbody):
@@ -479,7 +490,6 @@ def main():
                                 state.data.qvel[dof_adr : dof_adr+6] = 0
                                 state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
                     
-                    # Lights force reset
                     for i in range(state.model.nlight):
                         body_id = state.model.light_bodyid[i]
                         jnt_adr = state.model.body_jntadr[body_id]
@@ -488,7 +498,6 @@ def main():
                             state.data.qvel[dof_adr : dof_adr+6] = 0
                             state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
 
-                    # Reset objects falling
                     for i in range(state.model.nbody):
                         jnt_adr = state.model.body_jntadr[i]
                         if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
@@ -498,6 +507,12 @@ def main():
                                 state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
 
                     mujoco.mj_step(state.model, state.data)
+
+                # [關鍵修正] 每 1.0 秒自動將物理狀態寫回 XML (Auto-Sync)
+                current_time = time.time()
+                if current_time - state.last_auto_save_time > 1.0:
+                    batch_update_bodies_xml(active_xml_path, state.model, state.data)
+                    state.last_auto_save_time = current_time
 
                 # 4. 渲染 MuJoCo
                 width, height = glfw.get_framebuffer_size(window)
@@ -512,7 +527,6 @@ def main():
 
                 mujoco.mjr_render(viewport, state.scn, state.ctx)
                 
-                # 5. GLFW 更新
                 glfw.swap_buffers(window)
                 glfw.poll_events()
 
@@ -524,9 +538,8 @@ def main():
             except Exception as e:
                 print(f"[Runtime Error] {e}")
 
-    # 迴圈結束後的清理
     state.gui.root.quit()
     glfw.terminate()
-
+    
 if __name__ == "__main__":
     main()

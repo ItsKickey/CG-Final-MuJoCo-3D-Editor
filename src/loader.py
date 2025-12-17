@@ -8,18 +8,12 @@ from pathlib import Path
 LAST_IMPORTED_BODY_NAME = None
 
 def get_relative_path(target_path, base_dir):
-    """
-    計算 target_path 相對於 base_dir 的相對路徑。
-    並強制使用 forward slash (/) 以兼容 MuJoCo。
-    """
     try:
-        # 轉為絕對路徑以確保計算正確
         target_abs = os.path.abspath(target_path)
         base_abs = os.path.abspath(base_dir)
         rel_path = os.path.relpath(target_abs, base_abs)
         return rel_path.replace("\\", "/")
     except ValueError:
-        # 如果無法計算相對路徑 (例如在不同磁碟機)，則回傳原本路徑
         return target_path.replace("\\", "/")
 
 def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_merged_xml=None):
@@ -31,7 +25,6 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
     main_root = main_tree.getroot()
     main_worldbody = main_root.find("worldbody")
 
-    # 取得主場景 XML 的目錄，作為相對路徑的基準點
     main_xml_dir = os.path.dirname(os.path.abspath(main_xml_path))
 
     obj_xml_path = os.path.abspath(obj_xml_path)
@@ -54,24 +47,15 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
             if geom_node is not None:
                 class_defaults[cls] = geom_node.attrib
 
-    #  將路徑轉換為相對路徑
     def fix_asset_path(node, attr_name):
         filename = node.get(attr_name)
         if not filename: return
-        
-        # 還原出該檔案的絕對路徑 
         abs_path = os.path.join(obj_dir, filename)
-        
-        # 如果檔案不存在，嘗試在父目錄找 (obj2mjcf 的一些行為)
         if not os.path.exists(abs_path):
             parent_dir = os.path.dirname(obj_dir)
             alt_path = os.path.join(parent_dir, filename)
             if os.path.exists(alt_path): abs_path = alt_path
-            
-        # 3. 計算相對於 main_xml 的相對路徑
         rel_path = get_relative_path(abs_path, main_xml_dir)
-        
-        # 4. 寫入 XML
         node.set(attr_name, rel_path)
 
     for mesh in obj_root.findall(".//mesh"): fix_asset_path(mesh, "file")
@@ -173,22 +157,56 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
     return mujoco.MjModel.from_xml_string(xml_str)
 
 def delete_body_from_scene(xml_path, body_name):
+    """
+    [修改] 深度刪除: 除了刪除 Body，還會刪除該 Body 使用的 Mesh 和 Material。
+    注意：這是一個簡化的實作，如果多個 Body 共用同一個 Mesh，這裡可能會誤刪。
+    但鑑於您的 Importer 邏輯是每個物件都有自己的一套 Mesh (Name Prefix)，這應該是安全的。
+    """
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         worldbody = root.find("worldbody")
-        found = False
+        asset = root.find("asset")
+        
+        found_body = None
         for body in worldbody.findall("body"):
             if body.get("name") == body_name:
-                worldbody.remove(body)
-                found = True
-                print(f"[loader] Deleted body: {body_name}")
+                found_body = body
                 break
-        if found:
-            if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
-            tree.write(xml_path, encoding="utf-8", xml_declaration=True)
-            return True
-        return False
+        
+        if found_body is None: return False
+
+        # 1. 找出該 Body 使用的所有 Mesh 和 Material 名稱
+        used_meshes = set()
+        used_materials = set()
+        
+        for geom in found_body.findall(".//geom"):
+            m = geom.get("mesh")
+            if m: used_meshes.add(m)
+            mat = geom.get("material")
+            if mat: used_materials.add(mat)
+
+        # 2. 刪除 Body 節點
+        worldbody.remove(found_body)
+        print(f"[loader] Deleted body: {body_name}")
+
+        # 3. 刪除相關聯的 Asset (Mesh & Material)
+        if asset is not None:
+            # 刪除 Mesh
+            meshes_to_remove = [m for m in asset.findall("mesh") if m.get("name") in used_meshes]
+            for m in meshes_to_remove:
+                asset.remove(m)
+                print(f"[loader] Deleted dependent mesh: {m.get('name')}")
+            
+            # 刪除 Material
+            mats_to_remove = [m for m in asset.findall("material") if m.get("name") in used_materials]
+            for m in mats_to_remove:
+                asset.remove(m)
+                print(f"[loader] Deleted dependent material: {m.get('name')}")
+
+        if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
+        tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+        return True
     except Exception as e:
         print(f"[loader] Delete Error: {e}")
         return False
@@ -214,6 +232,51 @@ def update_body_xml(xml_path, body_name, pos, quat):
         return False
     except Exception as e:
         print(f"[loader] Update XML Error: {e}")
+        return False
+    
+# [新增] 批次更新所有物體的位置 (用於 Auto-Sync)
+def batch_update_bodies_xml(xml_path, model, data):
+    """
+    遍歷模型中所有自由移動的 Body，將其當前的 qpos (位置/旋轉) 寫入 XML。
+    這用於在 Import 或其他 Reload 操作前，保存物理模擬的結果。
+    """
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        worldbody = root.find("worldbody")
+        
+        updated_count = 0
+        
+        # 建立 XML 中 Body Name -> Body Node 的映射，加速搜尋
+        xml_bodies = {b.get("name"): b for b in worldbody.findall("body") if b.get("name")}
+
+        for i in range(model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
+            if not name or name not in xml_bodies: continue
+
+            # 檢查是否有 Free Joint (只有自由物體需要更新位置，靜態物體不動)
+            jnt_adr = model.body_jntadr[i]
+            if jnt_adr >= 0 and model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                qpos_adr = model.jnt_qposadr[jnt_adr]
+                
+                # 讀取當前物理狀態
+                pos = data.qpos[qpos_adr : qpos_adr+3]
+                quat = data.qpos[qpos_adr+3 : qpos_adr+7]
+                
+                # 寫入 XML 節點
+                body_node = xml_bodies[name]
+                body_node.set("pos", f"{pos[0]:.4f} {pos[1]:.4f} {pos[2]:.4f}")
+                body_node.set("quat", f"{quat[0]:.4f} {quat[1]:.4f} {quat[2]:.4f} {quat[3]:.4f}")
+                updated_count += 1
+        
+        if updated_count > 0:
+            if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
+            tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+            # print(f"[loader] Auto-Saved {updated_count} bodies to XML.")
+            return True
+        return False
+    except Exception as e:
+        print(f"[loader] Batch Update Error: {e}")
         return False
 
 def add_light_to_scene(xml_path, spawn_pos="0 0 3"):
@@ -303,41 +366,32 @@ def change_floor_texture(xml_path, image_path):
                 break
                 
         if target_tex is not None:
-            # 清除舊的生成屬性 (builtin, rgb1, etc.)
+            # 清除舊的生成屬性
             for attr in ["builtin", "rgb1", "rgb2", "mark", "markrgb", "width", "height"]:
                 if attr in target_tex.attrib:
                     del target_tex.attrib[attr]
             
             target_tex.set("type", "2d")
             
-            # ==== [修改開始] 複製貼圖邏輯 ====
-            # 1. 取得專案根目錄 (假設 src/loader.py 在 src 資料夾下，往上兩層即為根目錄)
             project_root = os.getcwd()
-            
-            # 2. 定義目標資料夾: Import_mjcf/grid_textures
             dest_dir = os.path.join(project_root, "Import_mjcf", "grid_textures")
             if not os.path.exists(dest_dir):
-                os.makedirs(dest_dir) # 如果資料夾不存在則建立
+                os.makedirs(dest_dir) 
             
-            # 3. 定義目標檔案路徑
             filename = os.path.basename(image_path)
             dest_path = os.path.join(dest_dir, filename)
             
-            # 4. 執行複製 (如果來源和目標不同才複製)
             try:
-                #abspath 確保比對正確
                 if os.path.abspath(image_path) != os.path.abspath(dest_path):
-                    shutil.copy2(image_path, dest_path) # copy2 會保留檔案元數據
+                    shutil.copy2(image_path, dest_path)
                     print(f"[loader] Copied texture to: {dest_path}")
             except Exception as e:
                 print(f"[loader] Warning: Copy failed ({e}). Using original path.")
-                dest_path = image_path # 如果複製失敗，回退使用原始路徑
+                dest_path = image_path 
 
-            # 5. 計算 XML 相對於「目標檔案」的相對路徑
             xml_dir = os.path.dirname(os.path.abspath(xml_path))
             rel_path = get_relative_path(dest_path, xml_dir)
             target_tex.set("file", rel_path)
-            # ==== [修改結束] ====
             
             if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
             tree.write(xml_path, encoding="utf-8", xml_declaration=True)
