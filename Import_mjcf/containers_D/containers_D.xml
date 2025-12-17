@@ -1,0 +1,21 @@
+<mujoco model="containers_D">
+  <default>
+    <default class="visual">
+      <geom group="2" type="mesh" contype="0" conaffinity="0" />
+    </default>
+    <default class="collision">
+      <geom group="3" type="mesh" />
+    </default>
+  </default>
+  <asset>
+    <texture type="2d" name="containers_D_spacebits_texture" file="spacebits_texture.png" />
+    <material name="containers_D_spacebits_texture" texture="containers_D_spacebits_texture" specular="0.50196078" shininess="0.15999998099999999" />
+    <mesh file="containers_D.obj" name="containers_D_containers_D" />
+  </asset>
+  <worldbody>
+    <body name="containers_D">
+      <geom material="containers_D_spacebits_texture" mesh="containers_D_containers_D" class="visual" />
+      <geom mesh="containers_D_containers_D" class="collision" />
+    </body>
+  </worldbody>
+</mujoco>

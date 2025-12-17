@@ -1,4 +1,4 @@
-# src/loader.py (V18 Update Logic)
+# src/loader.py
 import xml.etree.ElementTree as ET
 import mujoco
 import os
@@ -6,17 +6,33 @@ from pathlib import Path
 
 LAST_IMPORTED_BODY_NAME = None
 
+def get_relative_path(target_path, base_dir):
+    """
+    計算 target_path 相對於 base_dir 的相對路徑。
+    並強制使用 forward slash (/) 以兼容 MuJoCo。
+    """
+    try:
+        # 轉為絕對路徑以確保計算正確
+        target_abs = os.path.abspath(target_path)
+        base_abs = os.path.abspath(base_dir)
+        rel_path = os.path.relpath(target_abs, base_abs)
+        return rel_path.replace("\\", "/")
+    except ValueError:
+        # 如果無法計算相對路徑 (例如在不同磁碟機)，則回傳原本路徑
+        return target_path.replace("\\", "/")
+
 def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_merged_xml=None):
     global LAST_IMPORTED_BODY_NAME
 
     print(f"\n[loader] Processing: {os.path.basename(obj_xml_path)}")
 
-    # 1. 讀取主場景
     main_tree = ET.parse(main_xml_path)
     main_root = main_tree.getroot()
     main_worldbody = main_root.find("worldbody")
 
-    # 2. 讀取物件 MJCF
+    # 取得主場景 XML 的目錄，作為相對路徑的基準點
+    main_xml_dir = os.path.dirname(os.path.abspath(main_xml_path))
+
     obj_xml_path = os.path.abspath(obj_xml_path)
     obj_dir = os.path.dirname(obj_xml_path)
     
@@ -37,20 +53,30 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
             if geom_node is not None:
                 class_defaults[cls] = geom_node.attrib
 
+    # [關鍵修改] 將路徑轉換為相對路徑
     def fix_asset_path(node, attr_name):
         filename = node.get(attr_name)
         if not filename: return
+        
+        # 1. 先還原出該檔案的絕對路徑 (它原本是相對於 obj_xml 的)
         abs_path = os.path.join(obj_dir, filename)
+        
+        # 2. 如果檔案不存在，嘗試在父目錄找 (obj2mjcf 的一些行為)
         if not os.path.exists(abs_path):
             parent_dir = os.path.dirname(obj_dir)
             alt_path = os.path.join(parent_dir, filename)
             if os.path.exists(alt_path): abs_path = alt_path
-        node.set(attr_name, abs_path.replace("\\", "/"))
+            
+        # 3. 計算相對於 main_xml 的相對路徑
+        rel_path = get_relative_path(abs_path, main_xml_dir)
+        
+        # 4. 寫入 XML
+        node.set(attr_name, rel_path)
 
     for mesh in obj_root.findall(".//mesh"): fix_asset_path(mesh, "file")
     for tex in obj_root.findall(".//texture"): fix_asset_path(tex, "file")
 
-    # 3. Assets
+    # --- 以下保持不變 ---
     main_asset = main_root.find("asset")
     if main_asset is None: main_asset = ET.SubElement(main_root, "asset")
     
@@ -85,7 +111,6 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
                             break
                 if not exists: main_asset.append(item)
 
-    # 4. Body
     bodies = list(obj_worldbody)
     if not bodies: return None
     src_body = bodies[0]
@@ -133,7 +158,6 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
 
     main_worldbody.append(src_body)
 
-    # 5. Global Asset Fix (V16)
     if main_asset is not None:
         for mesh in main_asset.findall("mesh"):
             if not mesh.get("name") and mesh.get("file"):
@@ -149,7 +173,6 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
     return mujoco.MjModel.from_xml_string(xml_str)
 
 def delete_body_from_scene(xml_path, body_name):
-    """從 XML 移除 Body"""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
@@ -170,45 +193,35 @@ def delete_body_from_scene(xml_path, body_name):
         print(f"[loader] Delete Error: {e}")
         return False
 
-# ==== [新功能] 更新 Body 座標回 XML ====
 def update_body_xml(xml_path, body_name, pos, quat):
-    """將物體的最終位置寫入 XML，以便存檔與 Undo"""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         worldbody = root.find("worldbody")
-        
         found = False
         for body in worldbody.findall("body"):
             if body.get("name") == body_name:
-                # 格式化為字串 "x y z"
                 pos_str = f"{pos[0]:.4f} {pos[1]:.4f} {pos[2]:.4f}"
                 quat_str = f"{quat[0]:.4f} {quat[1]:.4f} {quat[2]:.4f} {quat[3]:.4f}"
-                
                 body.set("pos", pos_str)
                 body.set("quat", quat_str)
                 found = True
                 break
-        
         if found:
             if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
             tree.write(xml_path, encoding="utf-8", xml_declaration=True)
-            # print(f"[loader] Updated XML pose for {body_name}")
             return True
         return False
     except Exception as e:
         print(f"[loader] Update XML Error: {e}")
         return False
-    
-    # ==== [新功能] 新增燈光 ====
+
 def add_light_to_scene(xml_path, spawn_pos="0 0 3"):
-    """在場景中新增一個可移動的點光源"""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         worldbody = root.find("worldbody")
         
-        # 1. 產生唯一名稱
         base_name = "point_light"
         unique_name = base_name
         k = 1
@@ -218,35 +231,25 @@ def add_light_to_scene(xml_path, spawn_pos="0 0 3"):
             
         print(f"[loader] Creating light: {unique_name}")
         
-        # 2. 建立 Body 結構
-        # 結構: Body -> [FreeJoint, Light, Visual Geom]
         light_body = ET.SubElement(worldbody, "body", {
             "name": unique_name,
             "pos": spawn_pos
         })
-        
-        ET.SubElement(light_body, "joint", {
-            "type": "free",
-            "name": f"{unique_name}_joint"
-        })
-        
-        # 光源本體 (castshadow="true" 開啟陰影)
+        ET.SubElement(light_body, "joint", {"type": "free", "name": f"{unique_name}_joint"})
         ET.SubElement(light_body, "light", {
-            "mode": "trackcom", # 光源跟隨 body
+            "mode": "trackcom",
             "diffuse": "0.8 0.8 0.8",
             "specular": "0.3 0.3 0.3",
             "castshadow": "true",
-            "dir": "0 0 -1" # 預設向下
+            "dir": "0 0 -1"
         })
-        
-        # 視覺化球體 (代表燈泡) - 不參與碰撞 (contype=0)
         ET.SubElement(light_body, "geom", {
             "type": "sphere",
             "size": "0.1",
-            "rgba": "1 1 0.8 0.3", # 微黃色半透明
+            "rgba": "1 1 0.8 0.3",
             "contype": "0",
             "conaffinity": "0",
-            "group": "1" # 分組以便過濾
+            "group": "1"
         })
         
         global LAST_IMPORTED_BODY_NAME
@@ -255,19 +258,15 @@ def add_light_to_scene(xml_path, spawn_pos="0 0 3"):
         if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
         tree.write(xml_path, encoding="utf-8", xml_declaration=True)
         return True
-        
     except Exception as e:
         print(f"[loader] Add Light Error: {e}")
         return False
 
-# ==== [新功能] 更新燈光顏色 ====
 def update_light_xml(xml_path, body_name, rgb):
-    """更新 XML 中燈光的顏色"""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         worldbody = root.find("worldbody")
-        
         found = False
         for body in worldbody.findall("body"):
             if body.get("name") == body_name:
@@ -275,16 +274,12 @@ def update_light_xml(xml_path, body_name, rgb):
                 if light is not None:
                     rgb_str = f"{rgb[0]:.3f} {rgb[1]:.3f} {rgb[2]:.3f}"
                     light.set("diffuse", rgb_str)
-                    light.set("specular", f"{rgb[0]*0.5:.3f} {rgb[1]*0.5:.3f} {rgb[2]*0.5:.3f}") # Specular 自動減半
-                    
-                    # 同步更新視覺球體的顏色
+                    light.set("specular", f"{rgb[0]*0.5:.3f} {rgb[1]*0.5:.3f} {rgb[2]*0.5:.3f}")
                     geom = body.find("geom")
                     if geom is not None:
                         geom.set("rgba", f"{rgb[0]} {rgb[1]} {rgb[2]} 0.8")
-                        
                     found = True
                 break
-        
         if found:
             if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
             tree.write(xml_path, encoding="utf-8", xml_declaration=True)
@@ -293,16 +288,14 @@ def update_light_xml(xml_path, body_name, rgb):
     except Exception as e:
         print(f"[loader] Update Light Error: {e}")
         return False
-    
+
 def change_floor_texture(xml_path, image_path):
-    """將場景中名為 'grid' 的貼圖替換為指定的圖片檔案"""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         asset = root.find("asset")
         if asset is None: return False
         
-        # 尋找名稱為 "grid" 的 texture
         target_tex = None
         for tex in asset.findall("texture"):
             if tex.get("name") == "grid":
@@ -310,19 +303,20 @@ def change_floor_texture(xml_path, image_path):
                 break
                 
         if target_tex is not None:
-            # 1. 移除內建的 checker 屬性 (如果有)
             for attr in ["builtin", "rgb1", "rgb2", "mark", "markrgb", "width", "height"]:
                 if attr in target_tex.attrib:
                     del target_tex.attrib[attr]
             
-            # 2. 設定為圖片模式
             target_tex.set("type", "2d")
-            target_tex.set("file", image_path)
             
-            # 3. 存檔
+            # [修改] 使用相對路徑
+            xml_dir = os.path.dirname(os.path.abspath(xml_path))
+            rel_path = get_relative_path(image_path, xml_dir)
+            target_tex.set("file", rel_path)
+            
             if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
             tree.write(xml_path, encoding="utf-8", xml_declaration=True)
-            print(f"[loader] Floor texture changed to: {image_path}")
+            print(f"[loader] Floor texture changed to: {rel_path}")
             return True
         else:
             print("[loader] Error: Texture 'grid' not found in asset.")

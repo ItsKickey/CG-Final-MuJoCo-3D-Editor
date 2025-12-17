@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="basemodule_C">
+  <asset>
+    <texture name="tex_spacebits_texture" type="2d" file="spacebits_texture.png" />
+    <material name="mat_spacebits_texture" texture="tex_spacebits_texture" rgba="1 1 1 1" />
+    <mesh name="basemodule_C_spacebits_texture" file="basemodule_C_spacebits_texture.obj" />
+  </asset>
+  <worldbody>
+    <body name="basemodule_C">
+      <freejoint />
+      <geom type="mesh" mesh="basemodule_C_spacebits_texture" pos="0 0 0" material="mat_spacebits_texture" />
+    </body>
+  </worldbody>
+</mujoco>

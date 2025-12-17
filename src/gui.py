@@ -42,7 +42,7 @@ class ControlPanel:
 
         # ==== 介面內容 ====
 
-        tk.Label(self.content_frame, text="Furniture Placer", font=("Arial", 16, "bold"), bg="#f0f0f0").pack(pady=10)
+        tk.Label(self.content_frame, text="Scene Editer", font=("Arial", 16, "bold"), bg="#f0f0f0").pack(pady=10)
 
         # File
         frame_file = tk.LabelFrame(self.content_frame, text="File", padx=10, pady=10, bg="#f0f0f0")

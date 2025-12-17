@@ -2,8 +2,7 @@
 import os
 import shutil
 
-# 內嵌的預設場景 XML (包含可編輯的燈光與地板)
-# 這樣即使沒有任何外部檔案，程式也能產生出這個場景
+# (保留 DEFAULT_SCENE_XML 字串內容)
 DEFAULT_SCENE_XML = """
 <mujoco model="My Final Project">
   <option timestep="0.002" gravity="0 0 -9.81" />
@@ -30,44 +29,30 @@ DEFAULT_SCENE_XML = """
 
 def initialize_project():
     """
-    初始化專案結構：
-    1. 檢查 defaultscene 資料夾與 main_scene.xml，沒有就自動產生。
-    2. 檢查 scene 資料夾與 current_scene.xml，沒有就從 default 複製。
+    初始化專案：
+    每次啟動時，強制將 Default Scene 複製為 Current Scene (Runtime Cache)。
+    達到類似 Blender 的 'Fresh Start' 效果。
     """
     
-    # 定義路徑
     default_dir = "defaultscene"
     scene_dir = "scene"
     
-    # 這是我們的「母本」，如果 user 搞壞了，這裡永遠有一份備份
     base_xml = os.path.join(default_dir, "main_scene.xml")
-    
-    # 這是程式實際運行的「工作檔」
-    current_xml = os.path.join(scene_dir, "current_scene.xml")
+    current_xml = os.path.join(scene_dir, "current_scene.xml") # 這就是我們的暫存檔
 
     # 1. 建立資料夾
-    if not os.path.exists(default_dir):
-        os.makedirs(default_dir)
-        print(f"[Init] Created directory: {default_dir}")
-        
-    if not os.path.exists(scene_dir):
-        os.makedirs(scene_dir)
-        print(f"[Init] Created directory: {scene_dir}")
+    if not os.path.exists(default_dir): os.makedirs(default_dir)
+    if not os.path.exists(scene_dir): os.makedirs(scene_dir)
 
-    # 2. 檢查並重生 Base XML (防手殘機制)
+    # 2. 確保 Default 母本存在
     if not os.path.exists(base_xml):
-        print(f"[Init] CRITICAL: {base_xml} missing! Regenerating default scene...")
+        print(f"[Init] Regenerating default template: {base_xml}")
         with open(base_xml, "w", encoding="utf-8") as f:
             f.write(DEFAULT_SCENE_XML.strip())
     
-    # 3. 確保 Current XML 存在 (每次啟動時，若沒有 current 則複製一份)
-    # (可選：如果你希望每次重開都重置，可以在這裡強制 shutil.copy)
-    if not os.path.exists(current_xml):
-        print(f"[Init] Creating work scene: {current_xml}")
-        shutil.copy(base_xml, current_xml)
-    else:
-        # 如果你想每次啟動都重置場景，請取消下面這行的註解
-        # shutil.copy(base_xml, current_xml)
-        pass
+    # 3. [關鍵修改] 強制重置 Current Scene
+    # 不管之前有沒有 current_scene，直接用 default 覆蓋它
+    print(f"[Init] Resetting runtime scene from default...")
+    shutil.copy(base_xml, current_xml)
         
     return base_xml, current_xml

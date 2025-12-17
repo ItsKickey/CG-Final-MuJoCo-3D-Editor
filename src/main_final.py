@@ -12,7 +12,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.loader import (
     load_scene_with_object, delete_body_from_scene, update_body_xml, 
-    add_light_to_scene, update_light_xml, change_floor_texture, LAST_IMPORTED_BODY_NAME
+    add_light_to_scene, update_light_xml, change_floor_texture, 
+     LAST_IMPORTED_BODY_NAME
 )
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
@@ -43,20 +44,18 @@ class EditorState:
         self.current_z_height = 0.0
         self.is_light_selected = False
         self.listbox_body_ids = [] 
-        # [New] 待辦事項清單，用來解決 GIL 衝突問題
         self.pending_tasks = []
 
     def defer(self, func, *args, **kwargs):
-        """將函式加入待辦清單，稍後在主迴圈執行"""
         self.pending_tasks.append(lambda: func(*args, **kwargs))
 
 state = EditorState()
 
-# --- Managers Instantiation ---
+# --- Managers ---
 scale_mgr = ScaleManager()
 pm = PlacementManager()
 
-# --- Helper Functions ---
+# --- Helper Functions (維持不變) ---
 def refresh_object_list_ui():
     if not state.model or not state.gui: return
     names = []; state.listbox_body_ids = []
@@ -75,7 +74,6 @@ def refresh_object_list_ui():
 def on_gui_list_select(index):
     if 0 <= index < len(state.listbox_body_ids):
         body_id = state.listbox_body_ids[index]
-        # 選取操作相對安全，可以直接執行
         select_object_by_id(body_id)
 
 def load_model(restore=True):
@@ -105,56 +103,29 @@ def get_light_idx_for_body(body_id):
         if state.model.light_bodyid[i] == body_id: return i
     return -1
 
-# [修改] 移除之前的 finalize_active_object (自動確認)，改用強制取消
 def cancel_active_object():
-    """
-    強制取消當前編輯：
-    只要沒有按 Confirm 就切換或做其他事，一律還原回初始狀態。
-    """
     if pm.active_body_id != -1:
         print(f"[Auto-Revert] Action without Confirm. Reverting Body {pm.active_body_id}...")
         pm.revert_placement(state.model, state.data)
-        
-        state.selected_body_id = -1
-        state.selected_qpos_adr = -1
-        state.is_light_selected = False
-        
+        state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         if state.gui: 
             state.gui.set_status("⚠️ Edit Cancelled (Reverted)")
             state.gui.select_list_item(-1)
         return True
     return False
 
-def update_gravity_from_gui(val):
-    """
-    val: 使用者輸入的數值 (float)
-    邏輯: 輸入 9.8 -> 重力設為 -9.8 (向下)
-         輸入 -1.0 -> 重力設為 1.0 (向上)
-    """
-    if state.model:
-        # 這裡實現你的需求：自動 * -1
-        # 確保 X, Y 軸歸零，只控制 Z
-        state.model.opt.gravity[:] = [0, 0, -float(val)]
-
-# --- Logic Functions (Internal) ---
+# --- Logic Functions (維持不變) ---
 def _change_floor_workflow_logic():
-    # 選擇圖片檔案 (png, jpg, etc.)
     img_path = filedialog.askopenfilename(title="Select Floor Image", filetypes=[("Images", "*.png;*.jpg;*.jpeg")])
     if not img_path: return
-
     try:
         if state.gui: state.gui.set_status("Updating Floor...")
-        
-        # 為了安全，我們也記錄一下歷史 (雖然這是環境修改)
         history.push_state(active_xml_path, state.model, state.data)
-        
-        # 呼叫 loader 修改 XML
         if change_floor_texture(active_xml_path, img_path):
-            # 重新載入模型以套用貼圖
             load_model(restore=True)
             if state.gui: state.gui.set_status(f"Floor updated: {os.path.basename(img_path)}")
-    except Exception as e:
-        print(e)
+    except Exception as e: print(e)
+
 
 def _open_scene_logic():
     path = filedialog.askopenfilename(filetypes=[("XML", "*.xml")])
@@ -171,52 +142,29 @@ def _import_obj_workflow_logic(obj_path=None):
     if not obj_path: return
     try:
         if state.gui: state.gui.set_status("Importing...")
-        
-        # 1. 確保上一個物體已經結束編輯 (Cancel)
         cancel_active_object()
-
-        # 2. 記錄匯入前的狀態 (Undo用)
         history.push_state(active_xml_path, state.model, state.data)
         
-        # 3. 轉檔與載入
         mjcf_path = convert_obj_with_obj2mjcf(obj_path)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 0.5
-        
-        # 載入新場景 (這會更新 LAST_IMPORTED_BODY_NAME)
         state.model = load_scene_with_object(active_xml_path, str(mjcf_path), spawn_height=spawn_h, save_merged_xml=active_xml_path)
         state.data = mujoco.MjData(state.model)
         mujoco.mj_forward(state.model, state.data)
-        
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
-        
         refresh_object_list_ui()
         
-        # 4. [關鍵修正] 強制選取剛匯入的物體
         target_bid = -1
-        
-        # 嘗試 A: 從 loader 變數抓取
         if LAST_IMPORTED_BODY_NAME:
             target_bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
-        
-        # 嘗試 B: 如果 A 失敗，直接抓最後一個物體 (通常新物體會在最後)
         if target_bid < 0 and state.model.nbody > 1:
             target_bid = state.model.nbody - 1
-            
-        # 5. 執行選取與進入編輯模式
         if target_bid >= 0:
-            # 這會呼叫 pm.start_placement -> 關閉碰撞 (變綠/紅)
             select_object_by_id(target_bid)
-            
             if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
-            
-            # 將鏡頭對準新物體
             state.cam.lookat = state.data.body_xpos[target_bid].copy()
             state.cam.distance = 5.0
-            
-            # [雙重保險] 再次強制更新一次 GUI 和 PM 狀態，確保它是紅色/綠色而不是實體
             pm.update(state.model, state.data)
-            
     except Exception as e:
         print(f"Import Error: {e}")
         import traceback; traceback.print_exc()
@@ -226,9 +174,7 @@ def _import_obj_workflow_logic(obj_path=None):
 def _add_light_workflow_logic():
     try:
         if state.gui: state.gui.set_status("Adding Light...")
-        # [修改] 新增燈光前，如果還沒 Confirm，直接 Revert 上一個
         cancel_active_object()
-        
         history.push_state(active_xml_path, state.model, state.data)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 3.0
         if add_light_to_scene(active_xml_path, spawn_pos=f"0 0 {spawn_h}"):
@@ -283,7 +229,11 @@ def _confirm_current_placement_logic():
         state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         state.gui.set_status("Placed & Saved.")
 
-# --- Public Actions (Wrappers) ---
+def update_gravity_from_gui(val):
+    if state.model:
+        state.model.opt.gravity[:] = [0, 0, -float(val)]
+
+# --- Wrapper Actions ---
 def open_scene(): state.defer(_open_scene_logic)
 def import_obj_workflow(obj_path=None): state.defer(_import_obj_workflow_logic, obj_path)
 def add_light_workflow(): state.defer(_add_light_workflow_logic)
@@ -317,13 +267,9 @@ def update_transform_from_gui(z, s, r, p, y):
     scale_mgr.apply_scale(state.model, state.ctx, state.selected_body_id, s)
     mujoco.mj_forward(state.model, state.data)
 
-# --- Interaction ---
 def select_object_by_id(body_id):
-    # ==== [關鍵邏輯] ====
-    # 如果正在選別人，且那個別人還沒 Confirm -> 強制 Revert (放棄修改)
     if pm.active_body_id != -1 and pm.active_body_id != body_id:
-        cancel_active_object() # <--- 這裡一律使用 Cancel，不再嘗試 Confirm
-    # ===================
+        cancel_active_object() 
 
     state.selected_body_id = body_id
     jntadr = state.model.body_jntadr[body_id]
@@ -352,6 +298,7 @@ def select_object_by_id(body_id):
         pm.start_placement(state.model, state.data, body_id)
     else: state.selected_qpos_adr = -1
 
+# --- Interaction (Callbacks) ---
 def pick_object(window, xpos, ypos):
     width, height = glfw.get_framebuffer_size(window)
     selpnt = np.zeros(3); selgeom = np.zeros(1, dtype=np.int32); selflex = np.zeros(1, dtype=np.int32); selskin = np.zeros(1, dtype=np.int32)
@@ -359,10 +306,13 @@ def pick_object(window, xpos, ypos):
     
     geom_id = selgeom[0]
     if geom_id < 0:
-        # 點空地 -> 如果正在編輯，強制放棄
         if pm.active_body_id != -1: cancel_active_object()
         return
     
+    # [新增] 防止選到 SkyDome (Group 4)
+    if state.model.geom_group[geom_id] == 4:
+        return
+
     body_id = state.model.geom_bodyid[geom_id]
     if body_id > 0:
         select_object_by_id(body_id)
@@ -386,7 +336,6 @@ def raycast_to_ground(window, xpos, ypos, cam):
 
 def snap_to_grid(val): return round(val / GRID_SIZE) * GRID_SIZE
 
-# --- Callbacks ---
 def mouse_button_callback(window, button, action, mods):
     state.button_left_pressed = (button == glfw.MOUSE_BUTTON_LEFT and action == glfw.PRESS)
     state.shift_pressed = (glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS)
@@ -416,12 +365,21 @@ def scroll_callback(window, xoffset, yoffset):
 def key_callback(window, key, scancode, action, mods):
     if action == glfw.PRESS:
         if key == glfw.KEY_I: import_obj_workflow()
-        elif key == glfw.KEY_ESCAPE: glfw.set_window_should_close(window, True)
+        elif key == glfw.KEY_ESCAPE: 
+             state.gui.root.quit() # Stop Mainloop
         elif key == glfw.KEY_ENTER: confirm_current_placement()
         elif key == glfw.KEY_DELETE: delete_selected_object()
         elif key == glfw.KEY_Z and (mods & glfw.MOD_CONTROL): perform_undo()
         elif key == glfw.KEY_Y and (mods & glfw.MOD_CONTROL): perform_redo()
 
+# --- Auto-Recovery ---
+def recover_corrupted_scene():
+    print("\n[System] ⚠️ CRITICAL: Scene corrupted. Resetting to Default...")
+    if state.gui: state.gui.set_status("⚠️ Scene Corrupted! Resetting...")
+    initialize_project()
+    load_model(restore=False)
+
+# --- Main (Inverted Control Loop) ---
 def main():
     if not glfw.init(): return
     window = glfw.create_window(1200, 900, "Final Project Editor", None, None)
@@ -429,6 +387,7 @@ def main():
     glfw.make_context_current(window)
     state.window = window
 
+    # 初始化 GUI
     state.gui = ControlPanel(
         load_cb=import_obj_workflow, 
         open_cb=open_scene, 
@@ -443,14 +402,13 @@ def main():
         list_select_cb=on_gui_list_select,
         floor_cb=change_floor_workflow,
         gravity_cb=update_gravity_from_gui
-
     )
 
-    if os.path.exists(active_xml_path):
-        print("[Main] Loading initial scene...")
-        load_model(restore=False)
-    else:
-        print("[Main] Error: Initial scene not found!")
+    print("[Main] Loading fresh scene...")
+    load_model(restore=False)
+    
+    if state.data is None:
+        recover_corrupted_scene()
 
     state.cam.azimuth = 90; state.cam.elevation = -45; state.cam.distance = 10
     state.cam.lookat = np.array([0.0, 0.0, 0.0])
@@ -460,60 +418,94 @@ def main():
     glfw.set_scroll_callback(window, scroll_callback)
     glfw.set_key_callback(window, key_callback)
 
-    while not glfw.window_should_close(window):
-        # [關鍵] 在迴圈最開始，乾淨地執行所有 Pending Tasks (避免 GIL 錯誤)
+    # ==== [關鍵改動] 定義遊戲迴圈函式 ====
+    def app_update_loop():
+        # 1. 檢查是否該關閉
+        if glfw.window_should_close(window):
+            state.gui.root.quit()
+            return
+
+        # 2. 處理 GUI 請求 (Defer tasks)
         while state.pending_tasks:
             task = state.pending_tasks.pop(0)
             task()
+        
+        # (注意：不再呼叫 state.gui.update()，因為 mainloop 會處理)
 
-        state.gui.update()
-        sim_start = state.data.time
-        while state.data.time - sim_start < 1.0/60.0:
-            pm.update(state.model, state.data)
-            state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
-
-            state.data.qfrc_applied[:] = 0 
-            if pm.active_body_id != -1:
-                for i in range(state.model.nbody):
-                    if i == 0: continue
-                    jnt_adr = state.model.body_jntadr[i]
+        try:
+            # 3. 物理模擬與渲染 (加上 try-catch 保護)
+            sim_start = state.data.time
+            while state.data.time - sim_start < 1.0/60.0:
+                pm.update(state.model, state.data)
+                state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
+                
+                # Zero out forces for placement/light logic
+                state.data.qfrc_applied[:] = 0 
+                if pm.active_body_id != -1:
+                     for i in range(state.model.nbody):
+                        if i == 0: continue
+                        jnt_adr = state.model.body_jntadr[i]
+                        if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                            dof_adr = state.model.jnt_dofadr[jnt_adr]
+                            state.data.qvel[dof_adr : dof_adr+6] = 0
+                            state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+                
+                for i in range(state.model.nlight):
+                    body_id = state.model.light_bodyid[i]
+                    jnt_adr = state.model.body_jntadr[body_id]
                     if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
                         dof_adr = state.model.jnt_dofadr[jnt_adr]
                         state.data.qvel[dof_adr : dof_adr+6] = 0
                         state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+
+                # Reset objects falling too far
+                for i in range(state.model.nbody):
+                    jnt_adr = state.model.body_jntadr[i]
+                    if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                        qpos_adr = state.model.jnt_qposadr[jnt_adr]
+                        if state.data.qpos[qpos_adr+2] < -5.0:
+                            state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
+                            state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
+
+                mujoco.mj_step(state.model, state.data)
+
+            # 4. 渲染
+            width, height = glfw.get_framebuffer_size(window)
+            viewport = mujoco.MjrRect(0, 0, width, height)
+            mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
             
-            for i in range(state.model.nlight):
-                body_id = state.model.light_bodyid[i]
-                jnt_adr = state.model.body_jntadr[body_id]
-                if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
-                    dof_adr = state.model.jnt_dofadr[jnt_adr]
-                    state.data.qvel[dof_adr : dof_adr+6] = 0
-                    state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+            if state.selected_body_id != -1:
+                for i in range(state.scn.ngeom):
+                    g = state.scn.geoms[i]
+                    bid = state.model.geom_bodyid[g.objid]
+                    if bid == state.selected_body_id: g.emission += 0.3
 
-            for i in range(state.model.nbody):
-                jnt_adr = state.model.body_jntadr[i]
-                if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
-                    qpos_adr = state.model.jnt_qposadr[jnt_adr]
-                    if state.data.qpos[qpos_adr+2] < -5.0:
-                        state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
-                        state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
+            mujoco.mjr_render(viewport, state.scn, state.ctx)
+            
+            # GLFW 事件處理
+            glfw.swap_buffers(window)
+            glfw.poll_events() # 這行在 mainloop 下執行通常是安全的
 
-            mujoco.mj_step(state.model, state.data)
+        except AttributeError:
+            if state.data is None:
+                recover_corrupted_scene()
+            else:
+                raise # 真實的程式錯誤，還是要報出來
+        except Exception as e:
+            print(f"[Runtime Error] {e}")
 
-        width, height = glfw.get_framebuffer_size(window)
-        viewport = mujoco.MjrRect(0, 0, width, height)
-        mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
-        
-        if state.selected_body_id != -1:
-            for i in range(state.scn.ngeom):
-                g = state.scn.geoms[i]
-                bid = state.model.geom_bodyid[g.objid]
-                if bid == state.selected_body_id: g.emission += 0.3
+        # 5. 排程下一幀 (這就是 Inversion of Control 的關鍵)
+        # 1ms 後再次呼叫自己，達成無窮迴圈的效果
+        state.gui.root.after(1, app_update_loop)
 
-        mujoco.mjr_render(viewport, state.scn, state.ctx)
-        glfw.swap_buffers(window); glfw.poll_events()
+    # ==== 啟動迴圈 ====
+    # 先呼叫一次 app_update_loop 開始運作
+    app_update_loop()
     
-    state.gui.root.destroy()
+    # 將主線程交給 Tkinter 管理
+    state.gui.root.mainloop()
+    
+    # 結束清理
     glfw.terminate()
 
 if __name__ == "__main__":

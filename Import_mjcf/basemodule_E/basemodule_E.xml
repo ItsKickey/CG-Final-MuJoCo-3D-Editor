@@ -1,0 +1,21 @@
+<mujoco model="basemodule_E">
+  <default>
+    <default class="visual">
+      <geom group="2" type="mesh" contype="0" conaffinity="0" />
+    </default>
+    <default class="collision">
+      <geom group="3" type="mesh" />
+    </default>
+  </default>
+  <asset>
+    <texture type="2d" name="basemodule_E_spacebits_texture" file="spacebits_texture.png" />
+    <material name="basemodule_E_spacebits_texture" texture="basemodule_E_spacebits_texture" specular="0.50196078" shininess="0.15999998099999999" />
+    <mesh file="basemodule_E.obj" name="basemodule_E_basemodule_E" />
+  </asset>
+  <worldbody>
+    <body name="basemodule_E">
+      <geom material="basemodule_E_spacebits_texture" mesh="basemodule_E_basemodule_E" class="visual" />
+      <geom mesh="basemodule_E_basemodule_E" class="collision" />
+    </body>
+  </worldbody>
+</mujoco>

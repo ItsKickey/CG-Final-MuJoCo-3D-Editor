@@ -1,0 +1,21 @@
+<mujoco model="cargo_A">
+  <default>
+    <default class="visual">
+      <geom group="2" type="mesh" contype="0" conaffinity="0" />
+    </default>
+    <default class="collision">
+      <geom group="3" type="mesh" />
+    </default>
+  </default>
+  <asset>
+    <texture type="2d" name="cargo_A_spacebits_texture" file="spacebits_texture.png" />
+    <material name="cargo_A_spacebits_texture" texture="cargo_A_spacebits_texture" specular="0.50196078" shininess="0.15999998099999999" />
+    <mesh file="cargo_A.obj" name="cargo_A_cargo_A" />
+  </asset>
+  <worldbody>
+    <body name="cargo_A">
+      <geom material="cargo_A_spacebits_texture" mesh="cargo_A_cargo_A" class="visual" />
+      <geom mesh="cargo_A_cargo_A" class="collision" />
+    </body>
+  </worldbody>
+</mujoco>
