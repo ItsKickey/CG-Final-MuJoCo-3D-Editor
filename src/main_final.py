@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.loader import (
     load_scene_with_object, delete_body_from_scene, update_body_xml, 
-    add_light_to_scene, update_light_xml, LAST_IMPORTED_BODY_NAME
+    add_light_to_scene, update_light_xml, change_floor_texture, LAST_IMPORTED_BODY_NAME
 )
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
@@ -42,7 +42,13 @@ class EditorState:
         self.gui = None
         self.current_z_height = 0.0
         self.is_light_selected = False
-        self.listbox_body_ids = []
+        self.listbox_body_ids = [] 
+        # [New] 待辦事項清單，用來解決 GIL 衝突問題
+        self.pending_tasks = []
+
+    def defer(self, func, *args, **kwargs):
+        """將函式加入待辦清單，稍後在主迴圈執行"""
+        self.pending_tasks.append(lambda: func(*args, **kwargs))
 
 state = EditorState()
 
@@ -69,6 +75,7 @@ def refresh_object_list_ui():
 def on_gui_list_select(index):
     if 0 <= index < len(state.listbox_body_ids):
         body_id = state.listbox_body_ids[index]
+        # 選取操作相對安全，可以直接執行
         select_object_by_id(body_id)
 
 def load_model(restore=True):
@@ -79,7 +86,6 @@ def load_model(restore=True):
         state.data = mujoco.MjData(state.model)
         if restore and old_state: restore_simulation_state(state.model, state.data, old_state)
         
-        # [關鍵] 載入後立刻計算一次物理，確保 extent 和 body_pos 正確
         mujoco.mj_forward(state.model, state.data) 
         
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
@@ -99,29 +105,47 @@ def get_light_idx_for_body(body_id):
         if state.model.light_bodyid[i] == body_id: return i
     return -1
 
-def finalize_active_object():
-    if pm.active_body_id == -1: return True
-    if pm.is_valid:
-        confirm_current_placement()
-    else:
-        print(f"[Auto-Revert] Body {pm.active_body_id} overlap. Reverting...")
-        pm.revert_placement(state.model, state.data)
-        if state.gui: state.gui.set_status("⚠️ Overlap detected! Reverted.")
-        state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
-        if state.gui: state.gui.select_list_item(-1)
-    return True
-
+# [修改] 移除之前的 finalize_active_object (自動確認)，改用強制取消
 def cancel_active_object():
+    """
+    強制取消當前編輯：
+    只要沒有按 Confirm 就切換或做其他事，一律還原回初始狀態。
+    """
     if pm.active_body_id != -1:
         print(f"[Auto-Revert] Action without Confirm. Reverting Body {pm.active_body_id}...")
         pm.revert_placement(state.model, state.data)
-        state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
-        if state.gui: state.gui.set_status("⚠️ Edit Cancelled (Reverted)"); state.gui.select_list_item(-1)
+        
+        state.selected_body_id = -1
+        state.selected_qpos_adr = -1
+        state.is_light_selected = False
+        
+        if state.gui: 
+            state.gui.set_status("⚠️ Edit Cancelled (Reverted)")
+            state.gui.select_list_item(-1)
         return True
     return False
 
-# --- Actions ---
-def open_scene():
+# --- Logic Functions (Internal) ---
+def _change_floor_workflow_logic():
+    # 選擇圖片檔案 (png, jpg, etc.)
+    img_path = filedialog.askopenfilename(title="Select Floor Image", filetypes=[("Images", "*.png;*.jpg;*.jpeg")])
+    if not img_path: return
+
+    try:
+        if state.gui: state.gui.set_status("Updating Floor...")
+        
+        # 為了安全，我們也記錄一下歷史 (雖然這是環境修改)
+        history.push_state(active_xml_path, state.model, state.data)
+        
+        # 呼叫 loader 修改 XML
+        if change_floor_texture(active_xml_path, img_path):
+            # 重新載入模型以套用貼圖
+            load_model(restore=True)
+            if state.gui: state.gui.set_status(f"Floor updated: {os.path.basename(img_path)}")
+    except Exception as e:
+        print(e)
+
+def _open_scene_logic():
     path = filedialog.askopenfilename(filetypes=[("XML", "*.xml")])
     if not path: return
     shutil.copy(path, CURRENT_SCENE_XML)
@@ -130,13 +154,15 @@ def open_scene():
     load_model(restore=False)
     if state.gui: state.gui.set_status(f"Opened: {os.path.basename(path)}")
 
-def import_obj_workflow(obj_path=None):
+def _import_obj_workflow_logic(obj_path=None):
     if not obj_path:
         obj_path = filedialog.askopenfilename(title="Select OBJ", filetypes=[("OBJ", "*.obj")])
     if not obj_path: return
     try:
         if state.gui: state.gui.set_status("Importing...")
-        finalize_active_object() # 匯入前結算上一個
+        
+        # [修改] 匯入前，如果還沒 Confirm，直接 Revert 上一個
+        cancel_active_object()
 
         history.push_state(active_xml_path, state.model, state.data)
         mjcf_path = convert_obj_with_obj2mjcf(obj_path)
@@ -144,10 +170,7 @@ def import_obj_workflow(obj_path=None):
         state.model = load_scene_with_object(active_xml_path, str(mjcf_path), spawn_height=spawn_h, save_merged_xml=active_xml_path)
         
         state.data = mujoco.MjData(state.model)
-        
-        # [Fix] 立即計算物理，確保 model.stat 和 body_xpos 有值
         mujoco.mj_forward(state.model, state.data)
-        
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         
@@ -158,20 +181,17 @@ def import_obj_workflow(obj_path=None):
             if bid >= 0:
                 select_object_by_id(bid)
                 if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
-                
-                # [Fix] 匯入後強制重置攝影機，防止 frustum_near too small
-                # 將鏡頭對準新物體，並拉開安全距離 (5.0)
                 state.cam.lookat = state.data.body_xpos[bid].copy()
                 state.cam.distance = 5.0 
-                # ==================================================
-                
     except Exception as e:
         print(e); import traceback; traceback.print_exc()
 
-def add_light_workflow():
+def _add_light_workflow_logic():
     try:
         if state.gui: state.gui.set_status("Adding Light...")
-        finalize_active_object()
+        # [修改] 新增燈光前，如果還沒 Confirm，直接 Revert 上一個
+        cancel_active_object()
+        
         history.push_state(active_xml_path, state.model, state.data)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 3.0
         if add_light_to_scene(active_xml_path, spawn_pos=f"0 0 {spawn_h}"):
@@ -181,29 +201,11 @@ def add_light_workflow():
                 if bid >= 0:
                     select_object_by_id(bid)
                     if state.gui: state.gui.set_status("Added Point Light")
-                    
-                    # [Fix] 新增燈光後也重置鏡頭
                     state.cam.lookat = state.data.body_xpos[bid].copy()
                     state.cam.distance = 5.0
-                    
     except Exception as e: print(e)
 
-# ... (其餘函式如 update_light_color, delete, confirm, save, undo, redo, select, pick, raycast, callback 均保持不變) ...
-# 為了節省篇幅，請保留你上次覆蓋後的剩餘代碼 (從 update_light_color_from_gui 開始到最後)
-
-def update_light_color_from_gui(r, g, b):
-    if state.selected_body_id == -1 or not state.is_light_selected: return
-    light_idx = get_light_idx_for_body(state.selected_body_id)
-    if light_idx >= 0:
-        state.model.light_diffuse[light_idx] = np.array([r, g, b])
-        state.model.light_specular[light_idx] = np.array([r*0.5, g*0.5, b*0.5])
-        geom_adr = state.model.body_geomadr[state.selected_body_id]
-        geom_num = state.model.body_geomnum[state.selected_body_id]
-        for i in range(geom_num):
-            state.model.geom_rgba[geom_adr+i] = np.array([r, g, b, 0.3])
-        mujoco.mj_forward(state.model, state.data)
-
-def delete_selected_object():
+def _delete_selected_object_logic():
     if state.selected_body_id == -1: return
     body_name = mujoco.mj_id2name(state.model, mujoco.mjtObj.mjOBJ_BODY, state.selected_body_id)
     if not body_name: return
@@ -213,7 +215,19 @@ def delete_selected_object():
         pm.active_body_id = -1; state.selected_body_id = -1
         if state.gui: state.gui.set_status(f"Deleted: {body_name}")
 
-def confirm_current_placement():
+def _perform_undo_logic():
+    history.undo(active_xml_path, state.model, state.data)
+    state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
+    state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+    pm.active_body_id = -1; refresh_object_list_ui()
+
+def _perform_redo_logic():
+    history.redo(active_xml_path, state.model, state.data)
+    state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
+    state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+    pm.active_body_id = -1; refresh_object_list_ui()
+
+def _confirm_current_placement_logic():
     if pm.active_body_id != -1 and pm.is_valid:
         history.push_state(active_xml_path, state.model, state.data)
         body_name = mujoco.mj_id2name(state.model, mujoco.mjtObj.mjOBJ_BODY, pm.active_body_id)
@@ -232,23 +246,47 @@ def confirm_current_placement():
         state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         state.gui.set_status("Placed & Saved.")
 
-def save_scene_as():
+# --- Public Actions (Wrappers) ---
+def open_scene(): state.defer(_open_scene_logic)
+def import_obj_workflow(obj_path=None): state.defer(_import_obj_workflow_logic, obj_path)
+def add_light_workflow(): state.defer(_add_light_workflow_logic)
+def delete_selected_object(): state.defer(_delete_selected_object_logic)
+def perform_undo(): state.defer(_perform_undo_logic)
+def perform_redo(): state.defer(_perform_redo_logic)
+def confirm_current_placement(): state.defer(_confirm_current_placement_logic)
+def change_floor_workflow(): state.defer(_change_floor_workflow_logic)
+
+def save_scene_as(): 
     path = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("XML", "*.xml")])
     if path: shutil.copy(active_xml_path, path); state.gui.set_status(f"Saved to {os.path.basename(path)}")
 
-def perform_undo():
-    history.undo(active_xml_path, state.model, state.data)
-    state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
-    state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
-    pm.active_body_id = -1; refresh_object_list_ui()
+def update_light_color_from_gui(r, g, b):
+    if state.selected_body_id == -1 or not state.is_light_selected: return
+    light_idx = get_light_idx_for_body(state.selected_body_id)
+    if light_idx >= 0:
+        state.model.light_diffuse[light_idx] = np.array([r, g, b])
+        state.model.light_specular[light_idx] = np.array([r*0.5, g*0.5, b*0.5])
+        geom_adr = state.model.body_geomadr[state.selected_body_id]
+        geom_num = state.model.body_geomnum[state.selected_body_id]
+        for i in range(geom_num):
+            state.model.geom_rgba[geom_adr+i] = np.array([r, g, b, 0.3])
+        mujoco.mj_forward(state.model, state.data)
 
-def perform_redo():
-    history.redo(active_xml_path, state.model, state.data)
-    pm.active_body_id = -1; refresh_object_list_ui()
+def update_transform_from_gui(z, s, r, p, y):
+    if state.selected_qpos_adr < 0: return
+    state.current_z_height = z
+    state.data.qpos[state.selected_qpos_adr + 2] = z
+    state.data.qpos[state.selected_qpos_adr+3 : state.selected_qpos_adr+7] = euler2quat(r, p, y)
+    scale_mgr.apply_scale(state.model, state.ctx, state.selected_body_id, s)
+    mujoco.mj_forward(state.model, state.data)
 
+# --- Interaction ---
 def select_object_by_id(body_id):
+    # ==== [關鍵邏輯] ====
+    # 如果正在選別人，且那個別人還沒 Confirm -> 強制 Revert (放棄修改)
     if pm.active_body_id != -1 and pm.active_body_id != body_id:
-        cancel_active_object()
+        cancel_active_object() # <--- 這裡一律使用 Cancel，不再嘗試 Confirm
+    # ===================
 
     state.selected_body_id = body_id
     jntadr = state.model.body_jntadr[body_id]
@@ -277,14 +315,6 @@ def select_object_by_id(body_id):
         pm.start_placement(state.model, state.data, body_id)
     else: state.selected_qpos_adr = -1
 
-def update_transform_from_gui(z, s, r, p, y):
-    if state.selected_qpos_adr < 0: return
-    state.current_z_height = z
-    state.data.qpos[state.selected_qpos_adr + 2] = z
-    state.data.qpos[state.selected_qpos_adr+3 : state.selected_qpos_adr+7] = euler2quat(r, p, y)
-    scale_mgr.apply_scale(state.model, state.ctx, state.selected_body_id, s)
-    mujoco.mj_forward(state.model, state.data)
-
 def pick_object(window, xpos, ypos):
     width, height = glfw.get_framebuffer_size(window)
     selpnt = np.zeros(3); selgeom = np.zeros(1, dtype=np.int32); selflex = np.zeros(1, dtype=np.int32); selskin = np.zeros(1, dtype=np.int32)
@@ -292,6 +322,7 @@ def pick_object(window, xpos, ypos):
     
     geom_id = selgeom[0]
     if geom_id < 0:
+        # 點空地 -> 如果正在編輯，強制放棄
         if pm.active_body_id != -1: cancel_active_object()
         return
     
@@ -318,6 +349,7 @@ def raycast_to_ground(window, xpos, ypos, cam):
 
 def snap_to_grid(val): return round(val / GRID_SIZE) * GRID_SIZE
 
+# --- Callbacks ---
 def mouse_button_callback(window, button, action, mods):
     state.button_left_pressed = (button == glfw.MOUSE_BUTTON_LEFT and action == glfw.PRESS)
     state.shift_pressed = (glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS)
@@ -371,7 +403,8 @@ def main():
         save_cb=save_scene_as, 
         undo_cb=perform_undo, 
         redo_cb=perform_redo,
-        list_select_cb=on_gui_list_select
+        list_select_cb=on_gui_list_select,
+        floor_cb=change_floor_workflow
     )
 
     if os.path.exists(active_xml_path):
@@ -389,6 +422,11 @@ def main():
     glfw.set_key_callback(window, key_callback)
 
     while not glfw.window_should_close(window):
+        # [關鍵] 在迴圈最開始，乾淨地執行所有 Pending Tasks (避免 GIL 錯誤)
+        while state.pending_tasks:
+            task = state.pending_tasks.pop(0)
+            task()
+
         state.gui.update()
         sim_start = state.data.time
         while state.data.time - sim_start < 1.0/60.0:

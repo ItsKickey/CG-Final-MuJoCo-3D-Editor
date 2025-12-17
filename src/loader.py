@@ -293,3 +293,41 @@ def update_light_xml(xml_path, body_name, rgb):
     except Exception as e:
         print(f"[loader] Update Light Error: {e}")
         return False
+    
+def change_floor_texture(xml_path, image_path):
+    """將場景中名為 'grid' 的貼圖替換為指定的圖片檔案"""
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        asset = root.find("asset")
+        if asset is None: return False
+        
+        # 尋找名稱為 "grid" 的 texture
+        target_tex = None
+        for tex in asset.findall("texture"):
+            if tex.get("name") == "grid":
+                target_tex = tex
+                break
+                
+        if target_tex is not None:
+            # 1. 移除內建的 checker 屬性 (如果有)
+            for attr in ["builtin", "rgb1", "rgb2", "mark", "markrgb", "width", "height"]:
+                if attr in target_tex.attrib:
+                    del target_tex.attrib[attr]
+            
+            # 2. 設定為圖片模式
+            target_tex.set("type", "2d")
+            target_tex.set("file", image_path)
+            
+            # 3. 存檔
+            if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
+            tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+            print(f"[loader] Floor texture changed to: {image_path}")
+            return True
+        else:
+            print("[loader] Error: Texture 'grid' not found in asset.")
+            return False
+            
+    except Exception as e:
+        print(f"[loader] Change Floor Error: {e}")
+        return False
