@@ -3,48 +3,127 @@ import numpy as np
 import mujoco
 from src.utils import get_body_geoms, save_simulation_state, restore_simulation_state
 
-# --- AABB ---
-class AABBCalculator:
-    def __init__(self): self.local_bounds_cache = {}
+# --- Collision Calculator (Upgraded to OBB) ---
+class CollisionCalculator:
+    def __init__(self):
+        # 移除快取，確保縮放即時生效
+        pass
     
     def get_local_bounds(self, model, geom_id):
-        if geom_id in self.local_bounds_cache: return self.local_bounds_cache[geom_id]
+        """計算 Local AABB (未旋轉前的長寬高)"""
         g_type = model.geom_type[geom_id]
+        
+        # 1. 針對 Mesh (從頂點計算)
         if g_type == mujoco.mjtGeom.mjGEOM_MESH:
             dataid = model.geom_dataid[geom_id]
             if dataid != -1:
-                vert_adr = model.mesh_vertadr[dataid]; vert_num = model.mesh_vertnum[dataid]
+                vert_adr = model.mesh_vertadr[dataid]
+                vert_num = model.mesh_vertnum[dataid]
                 verts = model.mesh_vert[vert_adr : vert_adr + vert_num]
+                
                 if len(verts) > 0:
-                    min_v = np.min(verts, axis=0); max_v = np.max(verts, axis=0)
-                    self.local_bounds_cache[geom_id] = (min_v, max_v)
+                    min_v = np.min(verts, axis=0)
+                    max_v = np.max(verts, axis=0)
                     return min_v, max_v
+                    
+        # 2. 針對基本幾何體
         size = model.geom_size[geom_id]
-        if g_type == mujoco.mjtGeom.mjGEOM_BOX: min_v = -size[:3]; max_v = size[:3]
-        elif g_type == mujoco.mjtGeom.mjGEOM_SPHERE: r = size[0]; min_v = np.array([-r]*3); max_v = np.array([r]*3)
-        else: r = model.geom_rbound[geom_id]; min_v = np.array([-r]*3); max_v = np.array([r]*3)
-        self.local_bounds_cache[geom_id] = (min_v, max_v)
-        return min_v, max_v
+        if g_type == mujoco.mjtGeom.mjGEOM_BOX:
+            return -size[:3], size[:3]
+        elif g_type == mujoco.mjtGeom.mjGEOM_SPHERE:
+            r = size[0]
+            return np.array([-r]*3), np.array([r]*3)
+        else:
+            r = model.geom_rbound[geom_id]
+            return np.array([-r]*3), np.array([r]*3)
 
-    def get_world_aabb(self, model, data, geom_id):
+    def get_obb(self, model, data, geom_id):
+        """
+        取得 OBB (導向包圍盒) 的參數：
+        Center: 世界座標中心點
+        Axes: 3個旋轉軸向量 (3x3 矩陣)
+        Extents: 半長/半寬/半高 (3,)
+        """
         min_local, max_local = self.get_local_bounds(model, geom_id)
+        
+        # 1. 計算 Local 中心點與半徑
+        center_local = (min_local + max_local) * 0.5
+        extents = (max_local - min_local) * 0.5
+        
+        # 2. 讀取 MuJoCo 的位置與旋轉矩陣
+        pos = data.geom_xpos[geom_id] # 世界座標原點
+        mat = data.geom_xmat[geom_id].reshape(3, 3) # 旋轉矩陣 (這就是 OBB 的軸)
+        
+        # 3. 計算 OBB 在世界座標的真實中心 (考慮 Local offset)
+        center_world = pos + mat @ center_local
+        
+        return center_world, mat, extents
+
+    # 為了兼容舊代碼，保留 get_world_aabb 但不使用
+    def get_world_aabb(self, model, data, geom_id):
+        min_v, max_v = self.get_local_bounds(model, geom_id)
         corners = np.array([
-            [min_local[0], min_local[1], min_local[2]], [min_local[0], min_local[1], max_local[2]],
-            [min_local[0], max_local[1], min_local[2]], [min_local[0], max_local[1], max_local[2]],
-            [max_local[0], min_local[1], min_local[2]], [max_local[0], min_local[1], max_local[2]],
-            [max_local[0], max_local[1], min_local[2]], [max_local[0], max_local[1], max_local[2]],
+            [min_v[0], min_v[1], min_v[2]], [min_v[0], min_v[1], max_v[2]],
+            [min_v[0], max_v[1], min_v[2]], [min_v[0], max_v[1], max_v[2]],
+            [max_v[0], min_v[1], min_v[2]], [max_v[0], min_v[1], max_v[2]],
+            [max_v[0], max_v[1], min_v[2]], [max_v[0], max_v[1], max_v[2]]
         ])
-        pos = data.geom_xpos[geom_id]; mat = data.geom_xmat[geom_id].reshape(3, 3)
+        pos = data.geom_xpos[geom_id]
+        mat = data.geom_xmat[geom_id].reshape(3, 3)
         world_corners = corners @ mat.T + pos
         return np.min(world_corners, axis=0), np.max(world_corners, axis=0)
 
-def check_aabb_overlap(min1, max1, min2, max2, margin=0.0):
-    if max1[0] < min2[0] + margin or min1[0] > max2[0] - margin: return False
-    if max1[1] < min2[1] + margin or min1[1] > max2[1] - margin: return False
-    if max1[2] < min2[2] + margin or min1[2] > max2[2] - margin: return False
-    return True
+# 使用 SAT (分離軸定理) 檢查兩個 OBB 是否重疊
+def check_obb_overlap(obb1, obb2, margin=0.0):
+    c1, axes1, e1 = obb1
+    c2, axes2, e2 = obb2
+    
+    # 加上 margin (讓判定寬鬆一點點，避免穿模)
+    e1 = e1 - margin 
+    e2 = e2 - margin
+    # 如果 margin 導致 extent 變負數，歸零
+    e1 = np.maximum(e1, 0)
+    e2 = np.maximum(e2, 0)
 
-aabb_calc = AABBCalculator()
+    # 兩中心連線向量
+    T = c2 - c1
+    
+    # 需要測試的 15 個分離軸：
+    # 3個 A 的軸, 3個 B 的軸, 9個 Cross Product
+    
+    # 輔助函式：投影測試
+    # 如果 |T • L| > Σ |(Ai • L) * ei| + Σ |(Bi • L) * ei|，則分離 (無碰撞)
+    def is_separated(axis):
+        # 避免零向量
+        if np.linalg.norm(axis) < 1e-6: return False
+        
+        # 投影半徑 A
+        r_a = np.sum(np.abs(axes1.T @ axis) * e1)
+        # 投影半徑 B
+        r_b = np.sum(np.abs(axes2.T @ axis) * e2)
+        # 中心距離投影
+        dist = np.abs(np.dot(T, axis))
+        
+        return dist > (r_a + r_b)
+
+    # 1. 測試 A 的 3 個軸
+    for i in range(3):
+        if is_separated(axes1[:, i]): return False # 分離，無碰撞
+
+    # 2. 測試 B 的 3 個軸
+    for i in range(3):
+        if is_separated(axes2[:, i]): return False
+
+    # 3. 測試 9 個外積軸 (Cross Products)
+    for i in range(3):
+        for j in range(3):
+            axis = np.cross(axes1[:, i], axes2[:, j])
+            if is_separated(axis): return False
+
+    return True # 所有軸都重疊 -> 發生碰撞
+
+# 改名為 calculator
+collision_calc = CollisionCalculator()
 
 # --- Scale Manager ---
 class ScaleManager:
@@ -122,23 +201,16 @@ class PlacementManager:
         self.initial_qpos = None 
 
     def start_placement(self, model, data, body_id):
-        # [防呆修正] 如果重複選取自己，什麼都不做 (保持原本的 initial_qpos)
-        # 這樣可以避免把「移動中」的狀態誤存為「初始狀態」
-        if self.active_body_id == body_id:
-            return
+        if self.active_body_id == body_id: return
+        if self.active_body_id != -1: self.confirm_placement(model)
 
-        # 如果有其他物體正在編輯，這裡不負責 Revert，由外部 main.py 控制
-        # 這裡只負責初始化新物體
         self.active_body_id = body_id
         
-        # 1. 記錄初始狀態 (Pos 3 + Quat 4 = 7)
-        # 這就是我們的「回溯點」，無論之後怎麼亂動，Revert 時都會回到這裡
         jnt_adr = model.body_jntadr[body_id]
         if jnt_adr >= 0:
             qpos_adr = model.jnt_qposadr[jnt_adr]
             self.initial_qpos = data.qpos[qpos_adr : qpos_adr+7].copy()
         
-        # 2. 暫存外觀與碰撞屬性，並將其變為 Ghost (無碰撞)
         self.original_rgba.clear(); self.original_contype.clear(); self.original_conaffinity.clear()
         geoms = get_body_geoms(model, body_id)
         for gid in geoms:
@@ -151,21 +223,33 @@ class PlacementManager:
         if self.active_body_id == -1: return
         is_overlapping = False
         my_geoms = get_body_geoms(model, self.active_body_id)
+        
+        # [修改] 改用 OBB 檢查
         for my_g in my_geoms:
-            my_min, my_max = aabb_calc.get_world_aabb(model, data, my_g)
+            # 取得自己的 OBB
+            my_obb = collision_calc.get_obb(model, data, my_g)
+            
             for other_g in range(model.ngeom):
                 if other_g in my_geoms or other_g == 0: continue
                 if model.geom_contype[other_g] == 0: continue 
-                other_min, other_max = aabb_calc.get_world_aabb(model, data, other_g)
-                if check_aabb_overlap(my_min, my_max, other_min, other_max, margin=0.01):
-                    is_overlapping = True; break
+                
+                # 取得對方的 OBB
+                other_obb = collision_calc.get_obb(model, data, other_g)
+                
+                # [關鍵] 使用 SAT 檢查 OBB 重疊
+                # margin 設定為負數 (例如 -0.005) 可以讓判定稍微寬鬆一點
+                # 設定為 0.0 或正數則是非常嚴格
+                if check_obb_overlap(my_obb, other_obb, margin=0.0):
+                    is_overlapping = True
+                    break
             if is_overlapping: break
+
         self.is_valid = not is_overlapping
         target_color = np.array([0.0, 1.0, 0.0, 0.5]) if self.is_valid else np.array([1.0, 0.0, 0.0, 0.5])
-        for gid in my_geoms: model.geom_rgba[gid] = target_color
+        for gid in my_geoms:
+            model.geom_rgba[gid] = target_color
 
     def _cleanup_visuals(self, model):
-        """還原物體的外觀與碰撞屬性"""
         geoms = get_body_geoms(model, self.active_body_id)
         for gid in geoms:
             if gid in self.original_rgba: model.geom_rgba[gid] = self.original_rgba[gid]
@@ -174,25 +258,19 @@ class PlacementManager:
         self.original_rgba.clear()
 
     def confirm_placement(self, model):
-        """確認放置 (不還原位置，只還原外觀)"""
         if self.active_body_id == -1: return
         self._cleanup_visuals(model)
         self.active_body_id = -1
         self.initial_qpos = None
 
     def revert_placement(self, model, data):
-        """[關鍵功能] 取消放置：強制把物體彈回 initial_qpos"""
         if self.active_body_id != -1 and self.initial_qpos is not None:
-            # 1. 物理還原：寫回初始座標
             jnt_adr = model.body_jntadr[self.active_body_id]
             if jnt_adr >= 0:
                 qpos_adr = model.jnt_qposadr[jnt_adr]
                 data.qpos[qpos_adr : qpos_adr+7] = self.initial_qpos.copy()
             
-            # 2. 外觀還原：變回實體顏色
             self._cleanup_visuals(model)
-            
-            # 3. 清空狀態
             self.active_body_id = -1
             self.initial_qpos = None
             return True
