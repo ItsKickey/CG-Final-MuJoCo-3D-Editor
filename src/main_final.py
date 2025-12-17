@@ -21,6 +21,7 @@ from src.managers import ScaleManager, PlacementManager, HistoryManager
 from src.gui import ControlPanel
 from src.initializer import initialize_project
 from src.export import export_project_to_zip
+from src.logger import setup_logging
 # --- Setup ---
 if getattr(sys, 'frozen', False):
     os.chdir(os.path.dirname(sys.executable))
@@ -406,6 +407,7 @@ def recover_corrupted_scene():
 
 # --- Main (Inverted Control Loop) ---
 def main():
+    setup_logging()
     if not glfw.init(): return
     window = glfw.create_window(1200, 900, "Final Project Editor", None, None)
     if not window: glfw.terminate(); return

@@ -313,7 +313,7 @@ def change_floor_texture(xml_path, image_path):
             
             # ==== [修改開始] 複製貼圖邏輯 ====
             # 1. 取得專案根目錄 (假設 src/loader.py 在 src 資料夾下，往上兩層即為根目錄)
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            project_root = os.getcwd()
             
             # 2. 定義目標資料夾: Import_mjcf/grid_textures
             dest_dir = os.path.join(project_root, "Import_mjcf", "grid_textures")
