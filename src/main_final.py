@@ -446,95 +446,87 @@ def main():
     glfw.set_scroll_callback(window, scroll_callback)
     glfw.set_key_callback(window, key_callback)
 
-    # ==== [關鍵改動] 定義遊戲迴圈函式 ====
-    def app_update_loop():
-        # 1. 檢查是否該關閉
-        if glfw.window_should_close(window):
-            state.gui.root.quit()
-            return
+   
+    while not glfw.window_should_close(window):
+            # 1. 處理 GUI 的 Pending Tasks
+            while state.pending_tasks:
+                task = state.pending_tasks.pop(0)
+                task()
 
-        # 2. 處理 GUI 請求 (Defer tasks)
-        while state.pending_tasks:
-            task = state.pending_tasks.pop(0)
-            task()
-        
-        # (注意：不再呼叫 state.gui.update()，因為 mainloop 會處理)
+            try:
+                # 2. Tkinter 更新 (最關鍵的一步：手動更新，不讓它佔用 GIL)
+                state.gui.root.update_idletasks()
+                state.gui.root.update()
+            except Exception:
+                # 如果 Tkinter 視窗被關閉，這裡會報錯，我們就跳出迴圈
+                break
 
-        try:
-            # 3. 物理模擬與渲染 (加上 try-catch 保護)
-            sim_start = state.data.time
-            while state.data.time - sim_start < 1.0/60.0:
-                pm.update(state.model, state.data)
-                state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
-                
-                # Zero out forces for placement/light logic
-                state.data.qfrc_applied[:] = 0 
-                if pm.active_body_id != -1:
-                     for i in range(state.model.nbody):
-                        if i == 0: continue
-                        jnt_adr = state.model.body_jntadr[i]
+            try:
+                # 3. 物理模擬
+                sim_start = state.data.time
+                while state.data.time - sim_start < 1.0/60.0:
+                    pm.update(state.model, state.data)
+                    state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
+                    
+                    # Zero out forces
+                    state.data.qfrc_applied[:] = 0 
+                    if pm.active_body_id != -1:
+                        for i in range(state.model.nbody):
+                            if i == 0: continue
+                            jnt_adr = state.model.body_jntadr[i]
+                            if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                                dof_adr = state.model.jnt_dofadr[jnt_adr]
+                                state.data.qvel[dof_adr : dof_adr+6] = 0
+                                state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+                    
+                    # Lights force reset
+                    for i in range(state.model.nlight):
+                        body_id = state.model.light_bodyid[i]
+                        jnt_adr = state.model.body_jntadr[body_id]
                         if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
                             dof_adr = state.model.jnt_dofadr[jnt_adr]
                             state.data.qvel[dof_adr : dof_adr+6] = 0
                             state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+
+                    # Reset objects falling
+                    for i in range(state.model.nbody):
+                        jnt_adr = state.model.body_jntadr[i]
+                        if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                            qpos_adr = state.model.jnt_qposadr[jnt_adr]
+                            if state.data.qpos[qpos_adr+2] < -5.0:
+                                state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
+                                state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
+
+                    mujoco.mj_step(state.model, state.data)
+
+                # 4. 渲染 MuJoCo
+                width, height = glfw.get_framebuffer_size(window)
+                viewport = mujoco.MjrRect(0, 0, width, height)
+                mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
                 
-                for i in range(state.model.nlight):
-                    body_id = state.model.light_bodyid[i]
-                    jnt_adr = state.model.body_jntadr[body_id]
-                    if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
-                        dof_adr = state.model.jnt_dofadr[jnt_adr]
-                        state.data.qvel[dof_adr : dof_adr+6] = 0
-                        state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+                if state.selected_body_id != -1:
+                    for i in range(state.scn.ngeom):
+                        g = state.scn.geoms[i]
+                        bid = state.model.geom_bodyid[g.objid]
+                        if bid == state.selected_body_id: g.emission += 0.3
 
-                # Reset objects falling too far
-                for i in range(state.model.nbody):
-                    jnt_adr = state.model.body_jntadr[i]
-                    if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
-                        qpos_adr = state.model.jnt_qposadr[jnt_adr]
-                        if state.data.qpos[qpos_adr+2] < -5.0:
-                            state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
-                            state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
+                mujoco.mjr_render(viewport, state.scn, state.ctx)
+                
+                # 5. GLFW 更新
+                glfw.swap_buffers(window)
+                glfw.poll_events()
 
-                mujoco.mj_step(state.model, state.data)
+            except AttributeError:
+                if state.data is None:
+                    recover_corrupted_scene()
+                else:
+                    pass
+            except Exception as e:
+                print(f"[Runtime Error] {e}")
 
-            # 4. 渲染
-            width, height = glfw.get_framebuffer_size(window)
-            viewport = mujoco.MjrRect(0, 0, width, height)
-            mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
-            
-            if state.selected_body_id != -1:
-                for i in range(state.scn.ngeom):
-                    g = state.scn.geoms[i]
-                    bid = state.model.geom_bodyid[g.objid]
-                    if bid == state.selected_body_id: g.emission += 0.3
-
-            mujoco.mjr_render(viewport, state.scn, state.ctx)
-            
-            # GLFW 事件處理
-            glfw.swap_buffers(window)
-            glfw.poll_events() # 這行在 mainloop 下執行通常是安全的
-
-        except AttributeError:
-            if state.data is None:
-                recover_corrupted_scene()
-            else:
-                raise # 真實的程式錯誤，還是要報出來
-        except Exception as e:
-            print(f"[Runtime Error] {e}")
-
-        # 5. 排程下一幀 (這就是 Inversion of Control 的關鍵)
-        # 1ms 後再次呼叫自己，達成無窮迴圈的效果
-        state.gui.root.after(1, app_update_loop)
-
-    # ==== 啟動迴圈 ====
-    # 先呼叫一次 app_update_loop 開始運作
-    app_update_loop()
-    
-    # 將主線程交給 Tkinter 管理
-    state.gui.root.mainloop()
-    
-    # 結束清理
+    # 迴圈結束後的清理
+    state.gui.root.quit()
     glfw.terminate()
-
+    
 if __name__ == "__main__":
     main()
