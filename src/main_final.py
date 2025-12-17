@@ -19,21 +19,20 @@ from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
 from src.managers import ScaleManager, PlacementManager, HistoryManager
 from src.gui import ControlPanel
+# [新增] 引入初始化模組
+from src.initializer import initialize_project 
 
 # --- Setup ---
 if getattr(sys, 'frozen', False):
     os.chdir(os.path.dirname(sys.executable))
 
-BASE_XML_PATH = "scene/main_scene.xml"
-CURRENT_SCENE_XML = "scene/current_scene.xml"
+# ==== [修改] 使用 initialize_project 自動取得並修復路徑 ====
+# 這行會自動產生 defaultscene/main_scene.xml (如果不存在)
+# 並確保 scene/current_scene.xml 存在
+BASE_XML_PATH, CURRENT_SCENE_XML = initialize_project()
+
 GRID_SIZE = 0.5
-
-if not os.path.exists("scene"): os.makedirs("scene")
-if os.path.exists(BASE_XML_PATH):
-    shutil.copy(BASE_XML_PATH, CURRENT_SCENE_XML)
-
 active_xml_path = CURRENT_SCENE_XML
-
 # --- Global State ---
 class EditorState:
     def __init__(self):
@@ -157,7 +156,7 @@ def update_light_color_from_gui(r, g, b):
         geom_adr = state.model.body_geomadr[state.selected_body_id]
         geom_num = state.model.body_geomnum[state.selected_body_id]
         for i in range(geom_num):
-            state.model.geom_rgba[geom_adr+i] = np.array([r, g, b, 0.8])
+            state.model.geom_rgba[geom_adr+i] = np.array([r, g, b, 0.3])
             
         mujoco.mj_forward(state.model, state.data)
 
@@ -344,13 +343,11 @@ def main():
         redo_cb=perform_redo
     )
 
-    try:
-        obj_a_xml = "Assets/obj/basemodule_A/basemodule_A.xml"
-        state.model = load_scene_with_object(active_xml_path, obj_a_xml, spawn_height=0.0, save_merged_xml=active_xml_path)
-        state.data = mujoco.MjData(state.model)
-        state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
-        state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
-    except: pass
+    if os.path.exists(active_xml_path):
+        print("[Main] Loading initial scene...")
+        load_model(restore=False)
+    else:
+        print("[Main] Error: Initial scene not found!")
 
     state.cam.azimuth = 90; state.cam.elevation = -45; state.cam.distance = 10
     state.cam.lookat = np.array([0.0, 0.0, 0.0])

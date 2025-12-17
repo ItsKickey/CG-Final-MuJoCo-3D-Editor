@@ -243,7 +243,7 @@ def add_light_to_scene(xml_path, spawn_pos="0 0 3"):
         ET.SubElement(light_body, "geom", {
             "type": "sphere",
             "size": "0.1",
-            "rgba": "1 1 0.8 0.8", # 微黃色半透明
+            "rgba": "1 1 0.8 0.3", # 微黃色半透明
             "contype": "0",
             "conaffinity": "0",
             "group": "1" # 分組以便過濾
