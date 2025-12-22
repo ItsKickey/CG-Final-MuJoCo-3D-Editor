@@ -7,16 +7,16 @@ import numpy as np
 import sys
 import math
 import shutil
-import time # [新增] 用於計時自動儲存
-from tkinter import filedialog,simpledialog
+import time
+from tkinter import filedialog, simpledialog
 
+# 設定專案路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.loader import (
     load_scene_with_object, delete_body_from_scene, update_body_xml, 
     add_light_to_scene, update_light_xml, change_floor_texture, 
-    batch_update_bodies_xml, # [新增] 引入批次更新函式
-    LAST_IMPORTED_BODY_NAME
+    batch_update_bodies_xml, LAST_IMPORTED_BODY_NAME
 )
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
@@ -25,6 +25,7 @@ from src.gui import ImGuiPanel
 from src.initializer import initialize_project
 from src.export import export_project_to_zip
 from src.logger import setup_logging
+
 # --- Setup ---
 if getattr(sys, 'frozen', False):
     os.chdir(os.path.dirname(sys.executable))
@@ -37,21 +38,17 @@ active_xml_path = CURRENT_SCENE_XML
 # --- Global State ---
 class EditorState:
     def __init__(self):
-        # --- 原有的變數 (請確保這些都有回來) ---
         self.scale = 1.0
         self.last_mouse_x = 0; self.last_mouse_y = 0
         self.is_dragging = False; self.button_left_pressed = False; self.shift_pressed = False
         self.window = None; self.model = None; self.data = None
         
-        # [關鍵修復] 這兩行之前可能被不小心刪掉了！
         self.cam = mujoco.MjvCamera() 
         self.opt = mujoco.MjvOption()
         
         self.scn = None; self.ctx = None
         self.selected_body_id = -1; self.selected_qpos_adr = -1
-        # -------------------------------------
-
-        # --- ImGui 新增的變數 ---
+        
         self.gui = None 
         self.listbox_body_ids = [] 
         self.pending_tasks = []
@@ -62,33 +59,31 @@ class EditorState:
         self.listbox_index = -1
         
         self.current_scale = 1.0
-        self.current_z_height = 0.0 # 補上這個
-        self.current_roll = 0.0
-        self.current_pitch = 0.0
-        self.current_yaw = 0.0
+        self.current_z_height = 0.0
+        self.current_roll = 0.0; self.current_pitch = 0.0; self.current_yaw = 0.0
         self.current_rgb = (1.0, 1.0, 1.0)
         
-        self.is_placing = False
-        self.is_valid = False
-        self.is_light_selected = False # 補上這個
+        self.is_placing = False; self.is_valid = False
+        self.is_light_selected = False
+
+    # [修復 1] 補上這個關鍵方法，解決 ImGui Assertion Error
+    def defer(self, func, *args):
+        """將任務推遲到 Main Loop 的安全時段執行"""
+        self.pending_tasks.append(lambda: func(*args))
 
 state = EditorState()
-# --- Managers ---
 scale_mgr = ScaleManager()
 pm = PlacementManager()
 
-# --- Helper Functions (維持不變) ---
+# --- Helper Functions ---
 def refresh_object_list_ui():
     if not state.model: return
     names = []; state.listbox_body_ids = []
     for i in range(state.model.nbody):
         if i == 0: continue
-        # ... (略過燈光邏輯保持不變) ...
         name = mujoco.mj_id2name(state.model, mujoco.mjtObj.mjOBJ_BODY, i)
         if not name: name = f"Body {i}"
         names.append(name); state.listbox_body_ids.append(i)
-    
-    # [修改] 不再呼叫 state.gui.update_object_list，而是存入 state
     state.object_names = names
 
 def on_gui_list_select(index):
@@ -100,19 +95,12 @@ def load_model(restore=True):
     print(f"[System] Reloading model... (Restore={restore})")
     old_state = save_simulation_state(state.model, state.data) if restore else None
     try:
-        print(" -> [Debug] Loading XML...")
         state.model = mujoco.MjModel.from_xml_path(active_xml_path)
-
-        print(" -> [Debug] Creating Data...")
         state.data = mujoco.MjData(state.model)
         if restore and old_state: restore_simulation_state(state.model, state.data, old_state)
-        
         mujoco.mj_forward(state.model, state.data) 
-        print(" -> [Debug] Creating Scene...")
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
-        print(" -> [Debug] Creating Context...")
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
-        print(" -> [Debug] Done!")
         state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         refresh_object_list_ui()
         return state.model, state.data
@@ -133,8 +121,9 @@ def cancel_active_object():
         pm.revert_placement(state.model, state.data)
         state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         if state.gui: 
-            state.gui.set_status("⚠️ Edit Cancelled (Reverted)")
-            state.gui.select_list_item(-1)
+            state.gui.set_status("Edit Cancelled (Reverted)")
+            # [修復 2] 直接修改 state，不要呼叫 gui 方法
+            state.listbox_index = -1 
         return True
     return False
 
@@ -142,26 +131,17 @@ def cancel_active_object():
 def _export_project_logic():
     scene_name = simpledialog.askstring("Export Project", "Enter Scene Name:\n(Files will be saved to outputfile/Name.zip)")
     if not scene_name: return 
-
     valid_name = "".join(c for c in scene_name if c.isalnum() or c in (' ', '_', '-')).strip()
     if not valid_name: 
         if state.gui: state.gui.set_status("Invalid Name!")
         return
-
     try:
         if state.gui: state.gui.set_status("Exporting Zip...")
-        
-        # [關鍵修正] 匯出前強制同步一次，確保 ZIP 裡的位置是最新的
         batch_update_bodies_xml(active_xml_path, state.model, state.data)
-        
         zip_path = export_project_to_zip(active_xml_path, valid_name)
-        
         if state.gui: state.gui.set_status(f"Exported: {os.path.basename(zip_path)}")
-        print(f"[System] Exported to: {zip_path}")
-        
     except Exception as e:
         print(f"Export Error: {e}")
-        import traceback; traceback.print_exc()
         if state.gui: state.gui.set_status("Export Failed!")
 
 def _change_floor_workflow_logic():
@@ -174,7 +154,6 @@ def _change_floor_workflow_logic():
             load_model(restore=True)
             if state.gui: state.gui.set_status(f"Floor updated: {os.path.basename(img_path)}")
     except Exception as e: print(e)
-
 
 def _open_scene_logic():
     path = filedialog.askopenfilename(filetypes=[("XML", "*.xml")])
@@ -192,12 +171,8 @@ def _import_obj_workflow_logic(obj_path=None):
     try:
         if state.gui: state.gui.set_status("Importing...")
         cancel_active_object()
-        
-
         batch_update_bodies_xml(active_xml_path, state.model, state.data)
-        
         history.push_state(active_xml_path, state.model, state.data)
-        
         mjcf_path = convert_obj_with_obj2mjcf(obj_path)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 0.5
         state.model = load_scene_with_object(active_xml_path, str(mjcf_path), spawn_height=spawn_h, save_merged_xml=active_xml_path)
@@ -206,12 +181,9 @@ def _import_obj_workflow_logic(obj_path=None):
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         refresh_object_list_ui()
-        
         target_bid = -1
         if LAST_IMPORTED_BODY_NAME:
             target_bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
-        if target_bid < 0 and state.model.nbody > 1:
-            target_bid = state.model.nbody - 1
         if target_bid >= 0:
             select_object_by_id(target_bid)
             if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
@@ -220,7 +192,6 @@ def _import_obj_workflow_logic(obj_path=None):
             pm.update(state.model, state.data)
     except Exception as e:
         print(f"Import Error: {e}")
-        import traceback; traceback.print_exc()
         if state.gui: state.gui.set_status("Import Failed!")
         load_model(restore=False)
 
@@ -228,10 +199,7 @@ def _add_light_workflow_logic():
     try:
         if state.gui: state.gui.set_status("Adding Light...")
         cancel_active_object()
-        
-        
         batch_update_bodies_xml(active_xml_path, state.model, state.data)
-        
         history.push_state(active_xml_path, state.model, state.data)
         spawn_h = state.current_z_height if state.current_z_height > 0 else 3.0
         if add_light_to_scene(active_xml_path, spawn_pos=f"0 0 {spawn_h}"):
@@ -241,8 +209,6 @@ def _add_light_workflow_logic():
                 if bid >= 0:
                     select_object_by_id(bid)
                     if state.gui: state.gui.set_status("Added Point Light")
-                    state.cam.lookat = state.data.body_xpos[bid].copy()
-                    state.cam.distance = 5.0
     except Exception as e: print(e)
 
 def _delete_selected_object_logic():
@@ -287,8 +253,7 @@ def _confirm_current_placement_logic():
         state.gui.set_status("Placed & Saved.")
 
 def update_gravity_from_gui(val):
-    if state.model:
-        state.model.opt.gravity[:] = [0, 0, -float(val)]
+    if state.model: state.model.opt.gravity[:] = [0, 0, -float(val)]
 
 # --- Wrapper Actions ---
 def open_scene(): state.defer(_open_scene_logic)
@@ -302,7 +267,6 @@ def change_floor_workflow(): state.defer(_change_floor_workflow_logic)
 def export_project_workflow(): state.defer(_export_project_logic) 
 
 def save_scene_as(): 
-    # [關鍵修正] 另存前也同步一次
     batch_update_bodies_xml(active_xml_path, state.model, state.data)
     path = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("XML", "*.xml")])
     if path: shutil.copy(active_xml_path, path); state.gui.set_status(f"Saved to {os.path.basename(path)}")
@@ -336,11 +300,18 @@ def select_object_by_id(body_id):
     state.is_light_selected = (get_light_idx_for_body(body_id) != -1)
     
     if jntadr >= 0:
+        # [修復 3] 補回遺失的讀取邏輯 & 設定 selected_qpos_adr
+        qpos_adr = state.model.jnt_qposadr[jntadr]
+        state.selected_qpos_adr = qpos_adr # <--- 讓 Shift Drag 復活的關鍵
+        
         # 讀取數值
-        # ... (讀取 z, quat, scale 邏輯保持不變) ...
+        z = state.data.qpos[qpos_adr + 2]
+        quat = state.data.qpos[qpos_adr + 3 : qpos_adr + 7]
+        s = scale_mgr.get_current_scale(state.model, body_id)
+        
         r, p, y = quat2euler(quat)
         
-        # [修改] 更新 State 數值供 ImGui 下一幀讀取
+        # 更新 State 數值供 ImGui 下一幀讀取
         state.current_z_height = z
         state.current_scale = s
         state.current_roll = r
@@ -349,8 +320,9 @@ def select_object_by_id(body_id):
         
         if state.is_light_selected:
             light_idx = get_light_idx_for_body(body_id)
-            rgb = state.model.light_diffuse[light_idx]
-            state.current_rgb = (rgb[0], rgb[1], rgb[2])
+            if light_idx >= 0:
+                rgb = state.model.light_diffuse[light_idx]
+                state.current_rgb = (rgb[0], rgb[1], rgb[2])
 
         # 更新 Listbox index
         if body_id in state.listbox_body_ids:
@@ -372,9 +344,7 @@ def pick_object(window, xpos, ypos):
         if pm.active_body_id != -1: cancel_active_object()
         return
     
-    if state.model.geom_group[geom_id] == 4:
-        return
-
+    if state.model.geom_group[geom_id] == 4: return
     body_id = state.model.geom_bodyid[geom_id]
     if body_id > 0:
         select_object_by_id(body_id)
@@ -427,49 +397,25 @@ def scroll_callback(window, xoffset, yoffset):
 def key_callback(window, key, scancode, action, mods):
     if action == glfw.PRESS:
         if key == glfw.KEY_I: import_obj_workflow()
-        elif key == glfw.KEY_ESCAPE: 
-             state.gui.root.quit() # Stop Mainloop
+        # [修復 4] 修正 ESC 鍵，避免 Crash
+        elif key == glfw.KEY_ESCAPE: glfw.set_window_should_close(window, True)
         elif key == glfw.KEY_ENTER: confirm_current_placement()
         elif key == glfw.KEY_DELETE: delete_selected_object()
         elif key == glfw.KEY_Z and (mods & glfw.MOD_CONTROL): perform_undo()
         elif key == glfw.KEY_Y and (mods & glfw.MOD_CONTROL): perform_redo()
 
-# --- Auto-Recovery ---
 def recover_corrupted_scene():
     print("\n[System] ⚠️ CRITICAL: Scene corrupted. Resetting to Default...")
-    if state.gui: state.gui.set_status("⚠️ Scene Corrupted! Resetting...")
+    if state.gui: state.gui.set_status("Scene Corrupted! Resetting...")
     initialize_project()
     load_model(restore=False)
 
-# --- Main (Inverted Control Loop) ---
-# src/main_final.py
-
-# ... (前面的 import 保持不變) ...
-
-# src/main_final.py
-# 請確保這行在最上面
-import os
-os.environ["MUJOCO_GL"] = "glfw"
-
-import mujoco
-import glfw
-import numpy as np
-import sys
-import time
-
-# ... (其他的 import 保持不變) ...
-
-# 為了節省篇幅，請保留前面的 EditorState, helper functions 等定義
-# 只替換下面的 main() 函式
-
-# src/main_final.py 的 main 函式替換版
-
+# --- Main ---
 def main():
     os.environ["MUJOCO_GL"] = "glfw"
     setup_logging()
     if not glfw.init(): return
     
-    # RTX 3060 最佳設定：OpenGL 3.3 + Compatibility Profile
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_COMPAT_PROFILE)
@@ -479,29 +425,17 @@ def main():
     if not window: glfw.terminate(); return
     glfw.make_context_current(window)
     state.window = window
-    
-    # 關閉 V-Sync 避免卡頓，但如果你想要省電可以設成 1
     glfw.swap_interval(0)
 
-    # Callbacks
     gui_callbacks = {
-        'load': import_obj_workflow,
-        'open': open_scene,
-        'save': save_scene_as,
-        'export': export_project_workflow,
-        'floor': change_floor_workflow,
-        'add_light': add_light_workflow,
-        'undo': perform_undo,
-        'redo': perform_redo,
-        'confirm': confirm_current_placement,
-        'delete': delete_selected_object,
-        'list_select': on_gui_list_select,
-        'gravity': update_gravity_from_gui,
-        'transform': update_transform_from_gui,
-        'light_color': update_light_color_from_gui
+        'load': import_obj_workflow, 'open': open_scene, 'save': save_scene_as,
+        'export': export_project_workflow, 'floor': change_floor_workflow,
+        'add_light': add_light_workflow, 'undo': perform_undo, 'redo': perform_redo,
+        'confirm': confirm_current_placement, 'delete': delete_selected_object,
+        'list_select': on_gui_list_select, 'gravity': update_gravity_from_gui,
+        'transform': update_transform_from_gui, 'light_color': update_light_color_from_gui
     }
 
-    print("[Main] Loading scene...")
     try:
         load_model(restore=False)
         if state.data is None: recover_corrupted_scene()
@@ -512,11 +446,9 @@ def main():
     print("[Main] Initializing ImGui...")
     state.gui = ImGuiPanel(window)
 
-    # Camera Init
     state.cam.azimuth = 90; state.cam.elevation = -45; state.cam.distance = 10
     state.cam.lookat = np.array([0.0, 0.0, 0.0])
 
-    # Input Callbacks
     glfw.set_cursor_pos_callback(window, cursor_pos_callback)
     glfw.set_mouse_button_callback(window, mouse_button_callback)
     glfw.set_scroll_callback(window, scroll_callback)
@@ -526,10 +458,8 @@ def main():
     frame_count = 0
 
     while not glfw.window_should_close(window):
-        # 0. 基礎事件處理
         glfw.poll_events()
         
-        # 處理 GUI 延遲任務 (例如 Load OBJ)
         while state.pending_tasks:
             task = state.pending_tasks.pop(0)
             try: task()
@@ -537,20 +467,12 @@ def main():
 
         state.gui.process_inputs()
 
-        # ---------------------------------------------------------
-        # 1. 物理模擬區塊 (Physics)
-        # ---------------------------------------------------------
         try:
             sim_start = state.data.time
-            max_steps = 10; steps = 0 # 防止死鎖
-            
+            max_steps = 10; steps = 0
             while (state.data.time - sim_start < 1.0/60.0) and (steps < max_steps):
                 pm.update(state.model, state.data)
-                
-                # 重力與外力歸零
                 state.data.qfrc_applied[:] = 0 
-                
-                # Placement 物理
                 if pm.active_body_id != -1:
                     for i in range(state.model.nbody):
                         if i == 0: continue
@@ -559,8 +481,6 @@ def main():
                             dof_adr = state.model.jnt_dofadr[jnt_adr]
                             state.data.qvel[dof_adr : dof_adr+6] = 0
                             state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
-                
-                # 燈光物理歸零
                 for i in range(state.model.nlight):
                     body_id = state.model.light_bodyid[i]
                     jnt_adr = state.model.body_jntadr[body_id]
@@ -568,8 +488,6 @@ def main():
                         dof_adr = state.model.jnt_dofadr[jnt_adr]
                         state.data.qvel[dof_adr : dof_adr+6] = 0
                         state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
-
-                # 邊界檢查 (防止物體掉到無底洞)
                 for i in range(state.model.nbody):
                     jnt_adr = state.model.body_jntadr[i]
                     if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
@@ -577,58 +495,37 @@ def main():
                         if state.data.qpos[qpos_adr+2] < -5.0:
                             state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
                             state.data.qvel[:] = 0
-
                 mujoco.mj_step(state.model, state.data)
                 steps += 1
-
-            # 更新狀態給 GUI 讀取
             state.is_placing = (pm.active_body_id != -1)
             state.is_valid = pm.is_valid
-
-            # Auto-Sync (寫入 XML)
             if time.time() - state.last_auto_save_time > 1.0:
                 batch_update_bodies_xml(active_xml_path, state.model, state.data)
                 state.last_auto_save_time = time.time()
-
         except Exception as e:
-            # 物理運算出錯不應該讓程式崩潰，只印 Log
             if frame_count % 60 == 0: print(f"[Physics Warning] {e}")
 
-        # ---------------------------------------------------------
-        # 2. 渲染區塊 (Render)
-        # ---------------------------------------------------------
         try:
             width, height = glfw.get_framebuffer_size(window)
             viewport = mujoco.MjrRect(0, 0, width, height)
-            
-            # 更新 MuJoCo 場景
             mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
-            
-            # 處理高亮
             if state.selected_body_id != -1:
                 for i in range(state.scn.ngeom):
                     g = state.scn.geoms[i]
                     if g.objid == -1: continue
                     bid = state.model.geom_bodyid[g.objid]
                     if bid == state.selected_body_id: g.emission += 0.3
-
-            # 畫 MuJoCo
             mujoco.mjr_render(viewport, state.scn, state.ctx)
-
-            # 畫 GUI (這行現在很安全，因為我們修了 gui.py)
             state.gui.render(state, gui_callbacks)
-            
             glfw.swap_buffers(window)
-        
         except Exception as e:
             print(f"[Render Error] {e}")
-            # 如果渲染掛了，稍微暫停一下避免 CPU 100% 狂刷錯誤
             time.sleep(0.1)
 
         frame_count += 1
 
-    # Cleanup
     if state.gui: state.gui.shutdown()
     glfw.terminate()
+
 if __name__ == "__main__":
     main()

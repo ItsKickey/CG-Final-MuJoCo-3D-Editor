@@ -8,20 +8,31 @@ class ImGuiPanel:
         imgui.create_context()
         self.impl = GlfwRenderer(window)
         self.temp_gravity = 9.81
+        # [修復 1] 初始化狀態訊息變數
+        self.status_message = ""
+
+    # [修復 2] 新增 set_status 方法供 main_final 呼叫
+    def set_status(self, message):
+        self.status_message = message
 
     def process_inputs(self):
         self.impl.process_inputs()
 
     def render(self, state, callbacks):
-        # [關鍵修正] 確保這裡出錯時不會讓 ImGui 狀態爛掉
+        # 確保這裡出錯時不會讓 ImGui 狀態爛掉
         try:
             imgui.new_frame()
 
-            # [修正 1] 常數名稱修正: ON_FIRST_USE_EVER -> FIRST_USE_EVER
             imgui.set_next_window_position(10, 10, condition=imgui.FIRST_USE_EVER)
             imgui.set_next_window_size(300, 700, condition=imgui.FIRST_USE_EVER)
 
             imgui.begin("Control Panel")
+
+            # --- [修復 3] 在最上方顯示狀態列 ---
+            if self.status_message:
+                imgui.text_colored(self.status_message, 1.0, 1.0, 0.0) # 黃色文字
+                imgui.separator()
+            # --------------------------------
 
             # --- 1. File & Project ---
             if imgui.collapsing_header("File Operations", visible=True)[0]:
@@ -43,8 +54,9 @@ class ImGuiPanel:
             imgui.separator()
             imgui.text("Scene Objects")
             if hasattr(state, 'object_names') and state.object_names:
+                # 確保 index 合法
                 current_item = state.listbox_index if hasattr(state, 'listbox_index') else -1
-                # 調整高度讓列表更清楚
+                
                 with imgui.begin_list_box("##Objects", 280, 150) as list_box:
                     for i, name in enumerate(state.object_names):
                         is_selected = (i == current_item)
@@ -65,12 +77,11 @@ class ImGuiPanel:
             imgui.separator()
             imgui.text("Placement")
             
-            # [修正 2] 安全的 Disabled 區塊 (防止舊版 ImGui 崩潰)
+            # 安全的 Disabled 區塊
             def safe_disabled(disabled, func):
                 if disabled:
-                    # 檢查是否有 begin_disabled (新版才有)
                     if hasattr(imgui, 'begin_disabled'): imgui.begin_disabled()
-                    else: imgui.push_style_var(imgui.STYLE_ALPHA, 0.5) # 舊版用透明度模擬
+                    else: imgui.push_style_var(imgui.STYLE_ALPHA, 0.5)
                 
                 func()
                 
@@ -103,17 +114,24 @@ class ImGuiPanel:
                 imgui.separator()
                 imgui.text(f"Transform (Body {state.selected_body_id})")
 
-                changed, new_z = imgui.slider_float("Height", state.current_z_height, 0.0, 5.0)
-                if changed: callbacks['transform'](new_z, state.current_scale, state.current_roll, state.current_pitch, state.current_yaw)
+                # 確保變數存在
+                z_val = state.current_z_height if hasattr(state, 'current_z_height') else 0.0
+                scale_val = state.current_scale if hasattr(state, 'current_scale') else 1.0
+                roll_val = state.current_roll if hasattr(state, 'current_roll') else 0.0
+                pitch_val = state.current_pitch if hasattr(state, 'current_pitch') else 0.0
+                yaw_val = state.current_yaw if hasattr(state, 'current_yaw') else 0.0
 
-                changed, new_scale = imgui.slider_float("Scale", state.current_scale, 0.1, 3.0)
-                if changed: callbacks['transform'](state.current_z_height, new_scale, state.current_roll, state.current_pitch, state.current_yaw)
+                changed, new_z = imgui.slider_float("Height", z_val, 0.0, 5.0)
+                if changed: callbacks['transform'](new_z, scale_val, roll_val, pitch_val, yaw_val)
+
+                changed, new_scale = imgui.slider_float("Scale", scale_val, 0.1, 3.0)
+                if changed: callbacks['transform'](z_val, new_scale, roll_val, pitch_val, yaw_val)
                 
-                c_r, new_roll = imgui.slider_float("Roll (X)", state.current_roll, -180, 180)
-                c_p, new_pitch = imgui.slider_float("Pitch (Y)", state.current_pitch, -180, 180)
-                c_y, new_yaw = imgui.slider_float("Yaw (Z)", state.current_yaw, -180, 180)
+                c_r, new_roll = imgui.slider_float("Roll (X)", roll_val, -180, 180)
+                c_p, new_pitch = imgui.slider_float("Pitch (Y)", pitch_val, -180, 180)
+                c_y, new_yaw = imgui.slider_float("Yaw (Z)", yaw_val, -180, 180)
                 if c_r or c_p or c_y:
-                    callbacks['transform'](state.current_z_height, state.current_scale, new_roll, new_pitch, new_yaw)
+                    callbacks['transform'](z_val, scale_val, new_roll, new_pitch, new_yaw)
 
                 # --- 8. Light Color ---
                 if state.is_light_selected:
@@ -130,7 +148,7 @@ class ImGuiPanel:
             self.impl.render(imgui.get_draw_data())
             
         except Exception as e:
-            # [修正 3] 萬一 GUI 畫到一半出錯，嘗試結束 Frame 避免下一次 Assertion Error
+            # 萬一 GUI 畫到一半出錯，嘗試結束 Frame 避免下一次 Assertion Error
             print(f"[GUI Error] {e}")
             try: imgui.end_frame()
             except: pass
