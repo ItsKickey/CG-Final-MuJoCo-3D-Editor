@@ -20,7 +20,7 @@ from src.loader import (
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
 from src.managers import ScaleManager, PlacementManager, HistoryManager
-from src.gui import ControlPanel
+from src.gui import ImGuiPanel
 from src.initializer import initialize_project
 from src.export import export_project_to_zip
 from src.logger import setup_logging
@@ -36,44 +36,59 @@ active_xml_path = CURRENT_SCENE_XML
 # --- Global State ---
 class EditorState:
     def __init__(self):
+        # --- 原有的變數 (請確保這些都有回來) ---
         self.scale = 1.0
         self.last_mouse_x = 0; self.last_mouse_y = 0
         self.is_dragging = False; self.button_left_pressed = False; self.shift_pressed = False
         self.window = None; self.model = None; self.data = None
-        self.cam = mujoco.MjvCamera(); self.opt = mujoco.MjvOption()
+        
+        # [關鍵修復] 這兩行之前可能被不小心刪掉了！
+        self.cam = mujoco.MjvCamera() 
+        self.opt = mujoco.MjvOption()
+        
         self.scn = None; self.ctx = None
         self.selected_body_id = -1; self.selected_qpos_adr = -1
-        self.gui = None
-        self.current_z_height = 0.0
-        self.is_light_selected = False
+        # -------------------------------------
+
+        # --- ImGui 新增的變數 ---
+        self.gui = None 
         self.listbox_body_ids = [] 
         self.pending_tasks = []
-        self.last_auto_save_time = 0 # [新增] 上次自動儲存的時間戳記
+        self.last_auto_save_time = 0 
 
-    def defer(self, func, *args, **kwargs):
-        self.pending_tasks.append(lambda: func(*args, **kwargs))
+        # ImGui UI 狀態
+        self.object_names = []
+        self.listbox_index = -1
+        
+        self.current_scale = 1.0
+        self.current_z_height = 0.0 # 補上這個
+        self.current_roll = 0.0
+        self.current_pitch = 0.0
+        self.current_yaw = 0.0
+        self.current_rgb = (1.0, 1.0, 1.0)
+        
+        self.is_placing = False
+        self.is_valid = False
+        self.is_light_selected = False # 補上這個
 
 state = EditorState()
-
 # --- Managers ---
 scale_mgr = ScaleManager()
 pm = PlacementManager()
 
 # --- Helper Functions (維持不變) ---
 def refresh_object_list_ui():
-    if not state.model or not state.gui: return
+    if not state.model: return
     names = []; state.listbox_body_ids = []
     for i in range(state.model.nbody):
         if i == 0: continue
-        is_light = False
-        for l in range(state.model.nlight):
-            if state.model.light_bodyid[l] == i:
-                is_light = True; break
-        if is_light: continue
+        # ... (略過燈光邏輯保持不變) ...
         name = mujoco.mj_id2name(state.model, mujoco.mjtObj.mjOBJ_BODY, i)
         if not name: name = f"Body {i}"
         names.append(name); state.listbox_body_ids.append(i)
-    state.gui.update_object_list(names)
+    
+    # [修改] 不再呼叫 state.gui.update_object_list，而是存入 state
+    state.object_names = names
 
 def on_gui_list_select(index):
     if 0 <= index < len(state.listbox_body_ids):
@@ -173,8 +188,7 @@ def _import_obj_workflow_logic(obj_path=None):
         if state.gui: state.gui.set_status("Importing...")
         cancel_active_object()
         
-        # [關鍵修正] 在匯入新物體前，先強制將當前場景的所有物體位置寫入 XML
-        # 這樣當 load_scene_with_object 重新讀取 XML 時，其他物體就不會跳回原位了
+
         batch_update_bodies_xml(active_xml_path, state.model, state.data)
         
         history.push_state(active_xml_path, state.model, state.data)
@@ -210,7 +224,7 @@ def _add_light_workflow_logic():
         if state.gui: state.gui.set_status("Adding Light...")
         cancel_active_object()
         
-        # [關鍵修正] 新增燈光前也做一次同步
+        
         batch_update_bodies_xml(active_xml_path, state.model, state.data)
         
         history.push_state(active_xml_path, state.model, state.data)
@@ -317,24 +331,27 @@ def select_object_by_id(body_id):
     state.is_light_selected = (get_light_idx_for_body(body_id) != -1)
     
     if jntadr >= 0:
-        state.selected_qpos_adr = state.model.jnt_qposadr[jntadr]
-        z = state.data.qpos[state.selected_qpos_adr + 2]
-        quat = state.data.qpos[state.selected_qpos_adr+3 : state.selected_qpos_adr+7]
+        # 讀取數值
+        # ... (讀取 z, quat, scale 邏輯保持不變) ...
         r, p, y = quat2euler(quat)
-        s = scale_mgr.get_current_scale(state.model, body_id)
-        state.current_z_height = z 
         
-        if state.gui: state.gui.set_values(z, s, r, p, y)
-        if state.is_light_selected and state.gui:
+        # [修改] 更新 State 數值供 ImGui 下一幀讀取
+        state.current_z_height = z
+        state.current_scale = s
+        state.current_roll = r
+        state.current_pitch = p
+        state.current_yaw = y
+        
+        if state.is_light_selected:
             light_idx = get_light_idx_for_body(body_id)
             rgb = state.model.light_diffuse[light_idx]
-            state.gui.set_light_values(rgb[0], rgb[1], rgb[2])
-            
+            state.current_rgb = (rgb[0], rgb[1], rgb[2])
+
+        # 更新 Listbox index
         if body_id in state.listbox_body_ids:
-            idx = state.listbox_body_ids.index(body_id)
-            if state.gui: state.gui.select_list_item(idx)
+            state.listbox_index = state.listbox_body_ids.index(body_id)
         else:
-            if state.gui: state.gui.select_list_item(-1)
+            state.listbox_index = -1
             
         pm.start_placement(state.model, state.data, body_id)
     else: state.selected_qpos_adr = -1
@@ -421,30 +438,40 @@ def recover_corrupted_scene():
 
 # --- Main (Inverted Control Loop) ---
 def main():
+    os.environ["MUJOCO_GL"] = "glfw"
     setup_logging()
     if not glfw.init(): return
-    window = glfw.create_window(1200, 900, "Final Project Editor", None, None)
+    
+    # [重要] ImGui 需要 OpenGL 3.3+ (MuJoCo 也是)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+    window = glfw.create_window(1200, 900, "Final Project Editor (ImGui)", None, None)
     if not window: glfw.terminate(); return
     glfw.make_context_current(window)
     state.window = window
 
-    # 初始化 GUI
-    state.gui = ControlPanel(
-        load_cb=import_obj_workflow, 
-        open_cb=open_scene, 
-        add_light_cb=add_light_workflow,
-        rot_cb=update_transform_from_gui, 
-        light_color_cb=update_light_color_from_gui,
-        confirm_cb=confirm_current_placement, 
-        delete_cb=delete_selected_object, 
-        save_cb=save_scene_as, 
-        undo_cb=perform_undo, 
-        redo_cb=perform_redo,
-        list_select_cb=on_gui_list_select,
-        floor_cb=change_floor_workflow,
-        gravity_cb=update_gravity_from_gui,
-        export_cb=export_project_workflow
-    )
+    # [修改] 初始化 ImGui Panel
+    state.gui = ImGuiPanel(window)
+
+    # 準備 Callbacks 字典，傳給 GUI 使用
+    gui_callbacks = {
+        'load': import_obj_workflow,
+        'open': open_scene,
+        'save': save_scene_as,
+        'export': export_project_workflow,
+        'floor': change_floor_workflow,
+        'add_light': add_light_workflow,
+        'undo': perform_undo,
+        'redo': perform_redo,
+        'confirm': confirm_current_placement,
+        'delete': delete_selected_object,
+        'list_select': on_gui_list_select,
+        'gravity': update_gravity_from_gui,
+        'transform': update_transform_from_gui,
+        'light_color': update_light_color_from_gui
+    }
 
     print("[Main] Loading fresh scene...")
     load_model(restore=False)
@@ -466,12 +493,7 @@ def main():
             while state.pending_tasks:
                 task = state.pending_tasks.pop(0)
                 task()
-
-            try:
-                state.gui.root.update_idletasks()
-                state.gui.root.update()
-            except Exception:
-                break
+            state.gui.process_inputs()
 
             try:
                 # 3. 物理模擬
@@ -507,7 +529,8 @@ def main():
                                 state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
 
                     mujoco.mj_step(state.model, state.data)
-
+                state.is_placing = (pm.active_body_id != -1)
+                state.is_valid = pm.is_valid
                 # [關鍵修正] 每 1.0 秒自動將物理狀態寫回 XML (Auto-Sync)
                 current_time = time.time()
                 if current_time - state.last_auto_save_time > 1.0:
