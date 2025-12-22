@@ -8,10 +8,8 @@ class ImGuiPanel:
         imgui.create_context()
         self.impl = GlfwRenderer(window)
         self.temp_gravity = 9.81
-        # [修復 1] 初始化狀態訊息變數
         self.status_message = ""
 
-    # [修復 2] 新增 set_status 方法供 main_final 呼叫
     def set_status(self, message):
         self.status_message = message
 
@@ -19,7 +17,6 @@ class ImGuiPanel:
         self.impl.process_inputs()
 
     def render(self, state, callbacks):
-        # 確保這裡出錯時不會讓 ImGui 狀態爛掉
         try:
             imgui.new_frame()
 
@@ -28,11 +25,10 @@ class ImGuiPanel:
 
             imgui.begin("Control Panel")
 
-            # --- [修復 3] 在最上方顯示狀態列 ---
+            # --- Status Bar ---
             if self.status_message:
-                imgui.text_colored(self.status_message, 1.0, 1.0, 0.0) # 黃色文字
+                imgui.text_colored(self.status_message, 1.0, 1.0, 0.0)
                 imgui.separator()
-            # --------------------------------
 
             # --- 1. File & Project ---
             if imgui.collapsing_header("File Operations", visible=True)[0]:
@@ -54,13 +50,12 @@ class ImGuiPanel:
             imgui.separator()
             imgui.text("Scene Objects")
             if hasattr(state, 'object_names') and state.object_names:
-                # 確保 index 合法
                 current_item = state.listbox_index if hasattr(state, 'listbox_index') else -1
                 
                 with imgui.begin_list_box("##Objects", 280, 150) as list_box:
                     for i, name in enumerate(state.object_names):
                         is_selected = (i == current_item)
-                        if imgui.selectable(name, is_selected)[1]: # [1] is clicked
+                        if imgui.selectable(name, is_selected)[1]: 
                             callbacks['list_select'](i)
                         if is_selected:
                             imgui.set_item_default_focus()
@@ -77,14 +72,11 @@ class ImGuiPanel:
             imgui.separator()
             imgui.text("Placement")
             
-            # 安全的 Disabled 區塊
             def safe_disabled(disabled, func):
                 if disabled:
                     if hasattr(imgui, 'begin_disabled'): imgui.begin_disabled()
                     else: imgui.push_style_var(imgui.STYLE_ALPHA, 0.5)
-                
                 func()
-                
                 if disabled:
                     if hasattr(imgui, 'end_disabled'): imgui.end_disabled()
                     else: imgui.pop_style_var()
@@ -103,18 +95,21 @@ class ImGuiPanel:
             if state.selected_body_id != -1:
                  if imgui.button("Delete (Del)"): callbacks['delete']()
 
-            # --- 6. Physics ---
+            # --- 6. Physics (Modified: Gravity Button) ---
             imgui.separator()
             imgui.text("Physics")
-            changed, self.temp_gravity = imgui.input_float("Gravity Z", self.temp_gravity)
-            if changed: callbacks['gravity'](self.temp_gravity)
+            # [修正] 這裡只更新暫存變數，不直接觸發 callback
+            _, self.temp_gravity = imgui.input_float("Gravity Z", self.temp_gravity)
+            imgui.same_line()
+            # [修正] 新增 Set 按鈕，按下才觸發更新
+            if imgui.button("Set##Grav"): 
+                callbacks['gravity'](self.temp_gravity)
 
             # --- 7. Transform ---
             if state.selected_body_id != -1:
                 imgui.separator()
                 imgui.text(f"Transform (Body {state.selected_body_id})")
 
-                # 確保變數存在
                 z_val = state.current_z_height if hasattr(state, 'current_z_height') else 0.0
                 scale_val = state.current_scale if hasattr(state, 'current_scale') else 1.0
                 roll_val = state.current_roll if hasattr(state, 'current_roll') else 0.0
@@ -148,7 +143,6 @@ class ImGuiPanel:
             self.impl.render(imgui.get_draw_data())
             
         except Exception as e:
-            # 萬一 GUI 畫到一半出錯，嘗試結束 Frame 避免下一次 Assertion Error
             print(f"[GUI Error] {e}")
             try: imgui.end_frame()
             except: pass

@@ -10,7 +10,6 @@ import shutil
 import time
 from tkinter import filedialog, simpledialog
 
-# 設定專案路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.loader import (
@@ -26,12 +25,10 @@ from src.initializer import initialize_project
 from src.export import export_project_to_zip
 from src.logger import setup_logging
 
-# --- Setup ---
 if getattr(sys, 'frozen', False):
     os.chdir(os.path.dirname(sys.executable))
 
 BASE_XML_PATH, CURRENT_SCENE_XML = initialize_project()
-
 GRID_SIZE = 0.5
 active_xml_path = CURRENT_SCENE_XML
 
@@ -40,35 +37,28 @@ class EditorState:
     def __init__(self):
         self.scale = 1.0
         self.last_mouse_x = 0; self.last_mouse_y = 0
-        self.is_dragging = False; self.button_left_pressed = False; self.shift_pressed = False
-        self.window = None; self.model = None; self.data = None
+        self.is_dragging = False; 
         
+        # [修正] 分開記錄左右鍵狀態
+        self.button_left_pressed = False; 
+        self.button_right_pressed = False 
+        self.shift_pressed = False
+        
+        self.window = None; self.model = None; self.data = None
         self.cam = mujoco.MjvCamera() 
         self.opt = mujoco.MjvOption()
-        
         self.scn = None; self.ctx = None
         self.selected_body_id = -1; self.selected_qpos_adr = -1
-        
-        self.gui = None 
-        self.listbox_body_ids = [] 
-        self.pending_tasks = []
+        self.gui = None; self.listbox_body_ids = []; self.pending_tasks = []
         self.last_auto_save_time = 0 
-
-        # ImGui UI 狀態
-        self.object_names = []
-        self.listbox_index = -1
-        
-        self.current_scale = 1.0
-        self.current_z_height = 0.0
+        self.object_names = []; self.listbox_index = -1
+        self.current_scale = 1.0; self.current_z_height = 0.0
         self.current_roll = 0.0; self.current_pitch = 0.0; self.current_yaw = 0.0
         self.current_rgb = (1.0, 1.0, 1.0)
-        
         self.is_placing = False; self.is_valid = False
         self.is_light_selected = False
 
-    # [修復 1] 補上這個關鍵方法，解決 ImGui Assertion Error
     def defer(self, func, *args):
-        """將任務推遲到 Main Loop 的安全時段執行"""
         self.pending_tasks.append(lambda: func(*args))
 
 state = EditorState()
@@ -122,7 +112,6 @@ def cancel_active_object():
         state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         if state.gui: 
             state.gui.set_status("Edit Cancelled (Reverted)")
-            # [修復 2] 直接修改 state，不要呼叫 gui 方法
             state.listbox_index = -1 
         return True
     return False
@@ -249,7 +238,12 @@ def _confirm_current_placement_logic():
                     rgb = state.model.light_diffuse[light_idx]
                     update_light_xml(active_xml_path, body_name, rgb)
         pm.confirm_placement(state.model)
-        state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
+        
+        # [修正] 確認後清除選取狀態，並通知 GUI 取消高亮
+        state.selected_body_id = -1
+        state.selected_qpos_adr = -1
+        state.is_light_selected = False
+        state.listbox_index = -1 
         state.gui.set_status("Placed & Saved.")
 
 def update_gravity_from_gui(val):
@@ -300,18 +294,14 @@ def select_object_by_id(body_id):
     state.is_light_selected = (get_light_idx_for_body(body_id) != -1)
     
     if jntadr >= 0:
-        # [修復 3] 補回遺失的讀取邏輯 & 設定 selected_qpos_adr
         qpos_adr = state.model.jnt_qposadr[jntadr]
-        state.selected_qpos_adr = qpos_adr # <--- 讓 Shift Drag 復活的關鍵
+        state.selected_qpos_adr = qpos_adr 
         
-        # 讀取數值
         z = state.data.qpos[qpos_adr + 2]
         quat = state.data.qpos[qpos_adr + 3 : qpos_adr + 7]
         s = scale_mgr.get_current_scale(state.model, body_id)
-        
         r, p, y = quat2euler(quat)
         
-        # 更新 State 數值供 ImGui 下一幀讀取
         state.current_z_height = z
         state.current_scale = s
         state.current_roll = r
@@ -324,7 +314,6 @@ def select_object_by_id(body_id):
                 rgb = state.model.light_diffuse[light_idx]
                 state.current_rgb = (rgb[0], rgb[1], rgb[2])
 
-        # 更新 Listbox index
         if body_id in state.listbox_body_ids:
             state.listbox_index = state.listbox_body_ids.index(body_id)
         else:
@@ -370,7 +359,10 @@ def snap_to_grid(val): return round(val / GRID_SIZE) * GRID_SIZE
 
 def mouse_button_callback(window, button, action, mods):
     state.button_left_pressed = (button == glfw.MOUSE_BUTTON_LEFT and action == glfw.PRESS)
+    # [修正] 偵測右鍵
+    state.button_right_pressed = (button == glfw.MOUSE_BUTTON_RIGHT and action == glfw.PRESS)
     state.shift_pressed = (glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS)
+    
     if button == glfw.MOUSE_BUTTON_LEFT:
         if action == glfw.PRESS:
             if state.shift_pressed: state.is_dragging = True
@@ -380,6 +372,7 @@ def mouse_button_callback(window, button, action, mods):
 def cursor_pos_callback(window, xpos, ypos):
     dx = xpos - state.last_mouse_x; dy = ypos - state.last_mouse_y
     state.last_mouse_x = xpos; state.last_mouse_y = ypos
+    
     if state.is_dragging and state.selected_qpos_adr != -1:
         p = raycast_to_ground(window, xpos, ypos, state.cam)
         if p is not None:
@@ -387,7 +380,9 @@ def cursor_pos_callback(window, xpos, ypos):
             state.data.qpos[state.selected_qpos_adr+1] = snap_to_grid(p[1])
             state.data.qpos[state.selected_qpos_adr+2] = state.current_z_height
             mujoco.mj_forward(state.model, state.data) 
-    elif state.button_left_pressed and not state.shift_pressed:
+            
+    # [修正] 改用右鍵來旋轉鏡頭，解決 GUI 拖曳衝突
+    elif state.button_right_pressed:
         mujoco.mjv_moveCamera(state.model, mujoco.mjtMouse.mjMOUSE_ROTATE_V, dx/500, dy/500, state.scn, state.cam)
 
 def scroll_callback(window, xoffset, yoffset):
@@ -397,7 +392,6 @@ def scroll_callback(window, xoffset, yoffset):
 def key_callback(window, key, scancode, action, mods):
     if action == glfw.PRESS:
         if key == glfw.KEY_I: import_obj_workflow()
-        # [修復 4] 修正 ESC 鍵，避免 Crash
         elif key == glfw.KEY_ESCAPE: glfw.set_window_should_close(window, True)
         elif key == glfw.KEY_ENTER: confirm_current_placement()
         elif key == glfw.KEY_DELETE: delete_selected_object()
@@ -425,7 +419,7 @@ def main():
     if not window: glfw.terminate(); return
     glfw.make_context_current(window)
     state.window = window
-    glfw.swap_interval(0)
+    glfw.swap_interval(1)
 
     gui_callbacks = {
         'load': import_obj_workflow, 'open': open_scene, 'save': save_scene_as,
