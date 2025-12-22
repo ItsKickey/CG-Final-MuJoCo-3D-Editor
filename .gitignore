@@ -12,3 +12,4 @@ scene
 Import_mjcf
 defaultscene
 outputfile
+checkgl.py

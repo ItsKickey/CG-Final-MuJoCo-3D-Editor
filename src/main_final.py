@@ -1,8 +1,9 @@
 # src/main_final.py
+import os
+os.environ["MUJOCO_GL"] = "glfw"
 import mujoco
 import glfw
 import numpy as np
-import os
 import sys
 import math
 import shutil
@@ -99,15 +100,19 @@ def load_model(restore=True):
     print(f"[System] Reloading model... (Restore={restore})")
     old_state = save_simulation_state(state.model, state.data) if restore else None
     try:
+        print(" -> [Debug] Loading XML...")
         state.model = mujoco.MjModel.from_xml_path(active_xml_path)
+
+        print(" -> [Debug] Creating Data...")
         state.data = mujoco.MjData(state.model)
         if restore and old_state: restore_simulation_state(state.model, state.data, old_state)
         
         mujoco.mj_forward(state.model, state.data) 
-        
+        print(" -> [Debug] Creating Scene...")
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
+        print(" -> [Debug] Creating Context...")
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
-        
+        print(" -> [Debug] Done!")
         state.selected_body_id = -1; state.selected_qpos_adr = -1; state.is_light_selected = False
         refresh_object_list_ui()
         return state.model, state.data
@@ -437,25 +442,48 @@ def recover_corrupted_scene():
     load_model(restore=False)
 
 # --- Main (Inverted Control Loop) ---
+# src/main_final.py
+
+# ... (前面的 import 保持不變) ...
+
+# src/main_final.py
+# 請確保這行在最上面
+import os
+os.environ["MUJOCO_GL"] = "glfw"
+
+import mujoco
+import glfw
+import numpy as np
+import sys
+import time
+
+# ... (其他的 import 保持不變) ...
+
+# 為了節省篇幅，請保留前面的 EditorState, helper functions 等定義
+# 只替換下面的 main() 函式
+
+# src/main_final.py 的 main 函式替換版
+
 def main():
     os.environ["MUJOCO_GL"] = "glfw"
     setup_logging()
     if not glfw.init(): return
     
-    # [重要] ImGui 需要 OpenGL 3.3+ (MuJoCo 也是)
+    # RTX 3060 最佳設定：OpenGL 3.3 + Compatibility Profile
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_COMPAT_PROFILE)
+    glfw.window_hint(glfw.SAMPLES, 4)
 
-    window = glfw.create_window(1200, 900, "Final Project Editor (ImGui)", None, None)
+    window = glfw.create_window(1200, 900, "Final Project Editor (Stable Loop)", None, None)
     if not window: glfw.terminate(); return
     glfw.make_context_current(window)
     state.window = window
+    
+    # 關閉 V-Sync 避免卡頓，但如果你想要省電可以設成 1
+    glfw.swap_interval(0)
 
-    # [修改] 初始化 ImGui Panel
-    state.gui = ImGuiPanel(window)
-
-    # 準備 Callbacks 字典，傳給 GUI 使用
+    # Callbacks
     gui_callbacks = {
         'load': import_obj_workflow,
         'open': open_scene,
@@ -473,96 +501,134 @@ def main():
         'light_color': update_light_color_from_gui
     }
 
-    print("[Main] Loading fresh scene...")
-    load_model(restore=False)
-    
-    if state.data is None:
+    print("[Main] Loading scene...")
+    try:
+        load_model(restore=False)
+        if state.data is None: recover_corrupted_scene()
+    except Exception as e:
+        print(f"Initial Load Error: {e}")
         recover_corrupted_scene()
 
+    print("[Main] Initializing ImGui...")
+    state.gui = ImGuiPanel(window)
+
+    # Camera Init
     state.cam.azimuth = 90; state.cam.elevation = -45; state.cam.distance = 10
     state.cam.lookat = np.array([0.0, 0.0, 0.0])
 
+    # Input Callbacks
     glfw.set_cursor_pos_callback(window, cursor_pos_callback)
     glfw.set_mouse_button_callback(window, mouse_button_callback)
     glfw.set_scroll_callback(window, scroll_callback)
     glfw.set_key_callback(window, key_callback)
 
-   
-    while not glfw.window_should_close(window):
-            # 1. 處理 GUI 的 Pending Tasks
-            while state.pending_tasks:
-                task = state.pending_tasks.pop(0)
-                task()
-            state.gui.process_inputs()
+    print("[Main] Entering Loop...")
+    frame_count = 0
 
-            try:
-                # 3. 物理模擬
-                sim_start = state.data.time
-                while state.data.time - sim_start < 1.0/60.0:
-                    pm.update(state.model, state.data)
-                    state.gui.update_gui_state(pm.active_body_id != -1, pm.is_valid, state.selected_body_id != -1, state.is_light_selected)
-                    
-                    state.data.qfrc_applied[:] = 0 
-                    if pm.active_body_id != -1:
-                        for i in range(state.model.nbody):
-                            if i == 0: continue
-                            jnt_adr = state.model.body_jntadr[i]
-                            if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
-                                dof_adr = state.model.jnt_dofadr[jnt_adr]
-                                state.data.qvel[dof_adr : dof_adr+6] = 0
-                                state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
-                    
-                    for i in range(state.model.nlight):
-                        body_id = state.model.light_bodyid[i]
-                        jnt_adr = state.model.body_jntadr[body_id]
+    while not glfw.window_should_close(window):
+        # 0. 基礎事件處理
+        glfw.poll_events()
+        
+        # 處理 GUI 延遲任務 (例如 Load OBJ)
+        while state.pending_tasks:
+            task = state.pending_tasks.pop(0)
+            try: task()
+            except Exception as e: print(f"Task Error: {e}")
+
+        state.gui.process_inputs()
+
+        # ---------------------------------------------------------
+        # 1. 物理模擬區塊 (Physics)
+        # ---------------------------------------------------------
+        try:
+            sim_start = state.data.time
+            max_steps = 10; steps = 0 # 防止死鎖
+            
+            while (state.data.time - sim_start < 1.0/60.0) and (steps < max_steps):
+                pm.update(state.model, state.data)
+                
+                # 重力與外力歸零
+                state.data.qfrc_applied[:] = 0 
+                
+                # Placement 物理
+                if pm.active_body_id != -1:
+                    for i in range(state.model.nbody):
+                        if i == 0: continue
+                        jnt_adr = state.model.body_jntadr[i]
                         if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
                             dof_adr = state.model.jnt_dofadr[jnt_adr]
                             state.data.qvel[dof_adr : dof_adr+6] = 0
                             state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
-
-                    for i in range(state.model.nbody):
-                        jnt_adr = state.model.body_jntadr[i]
-                        if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
-                            qpos_adr = state.model.jnt_qposadr[jnt_adr]
-                            if state.data.qpos[qpos_adr+2] < -5.0:
-                                state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
-                                state.data.qvel[state.model.jnt_dofadr[jnt_adr]:state.model.jnt_dofadr[jnt_adr]+6] = 0
-
-                    mujoco.mj_step(state.model, state.data)
-                state.is_placing = (pm.active_body_id != -1)
-                state.is_valid = pm.is_valid
-                # [關鍵修正] 每 1.0 秒自動將物理狀態寫回 XML (Auto-Sync)
-                current_time = time.time()
-                if current_time - state.last_auto_save_time > 1.0:
-                    batch_update_bodies_xml(active_xml_path, state.model, state.data)
-                    state.last_auto_save_time = current_time
-
-                # 4. 渲染 MuJoCo
-                width, height = glfw.get_framebuffer_size(window)
-                viewport = mujoco.MjrRect(0, 0, width, height)
-                mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
                 
-                if state.selected_body_id != -1:
-                    for i in range(state.scn.ngeom):
-                        g = state.scn.geoms[i]
-                        bid = state.model.geom_bodyid[g.objid]
-                        if bid == state.selected_body_id: g.emission += 0.3
+                # 燈光物理歸零
+                for i in range(state.model.nlight):
+                    body_id = state.model.light_bodyid[i]
+                    jnt_adr = state.model.body_jntadr[body_id]
+                    if jnt_adr >= 0:
+                        dof_adr = state.model.jnt_dofadr[jnt_adr]
+                        state.data.qvel[dof_adr : dof_adr+6] = 0
+                        state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
 
-                mujoco.mjr_render(viewport, state.scn, state.ctx)
-                
-                glfw.swap_buffers(window)
-                glfw.poll_events()
+                # 邊界檢查 (防止物體掉到無底洞)
+                for i in range(state.model.nbody):
+                    jnt_adr = state.model.body_jntadr[i]
+                    if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
+                        qpos_adr = state.model.jnt_qposadr[jnt_adr]
+                        if state.data.qpos[qpos_adr+2] < -5.0:
+                            state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
+                            state.data.qvel[:] = 0
 
-            except AttributeError:
-                if state.data is None:
-                    recover_corrupted_scene()
-                else:
-                    pass
-            except Exception as e:
-                print(f"[Runtime Error] {e}")
+                mujoco.mj_step(state.model, state.data)
+                steps += 1
 
-    state.gui.root.quit()
+            # 更新狀態給 GUI 讀取
+            state.is_placing = (pm.active_body_id != -1)
+            state.is_valid = pm.is_valid
+
+            # Auto-Sync (寫入 XML)
+            if time.time() - state.last_auto_save_time > 1.0:
+                batch_update_bodies_xml(active_xml_path, state.model, state.data)
+                state.last_auto_save_time = time.time()
+
+        except Exception as e:
+            # 物理運算出錯不應該讓程式崩潰，只印 Log
+            if frame_count % 60 == 0: print(f"[Physics Warning] {e}")
+
+        # ---------------------------------------------------------
+        # 2. 渲染區塊 (Render)
+        # ---------------------------------------------------------
+        try:
+            width, height = glfw.get_framebuffer_size(window)
+            viewport = mujoco.MjrRect(0, 0, width, height)
+            
+            # 更新 MuJoCo 場景
+            mujoco.mjv_updateScene(state.model, state.data, state.opt, None, state.cam, mujoco.mjtCatBit.mjCAT_ALL.value, state.scn)
+            
+            # 處理高亮
+            if state.selected_body_id != -1:
+                for i in range(state.scn.ngeom):
+                    g = state.scn.geoms[i]
+                    if g.objid == -1: continue
+                    bid = state.model.geom_bodyid[g.objid]
+                    if bid == state.selected_body_id: g.emission += 0.3
+
+            # 畫 MuJoCo
+            mujoco.mjr_render(viewport, state.scn, state.ctx)
+
+            # 畫 GUI (這行現在很安全，因為我們修了 gui.py)
+            state.gui.render(state, gui_callbacks)
+            
+            glfw.swap_buffers(window)
+        
+        except Exception as e:
+            print(f"[Render Error] {e}")
+            # 如果渲染掛了，稍微暫停一下避免 CPU 100% 狂刷錯誤
+            time.sleep(0.1)
+
+        frame_count += 1
+
+    # Cleanup
+    if state.gui: state.gui.shutdown()
     glfw.terminate()
-    
 if __name__ == "__main__":
     main()
