@@ -158,9 +158,8 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
 
 def delete_body_from_scene(xml_path, body_name):
     """
-    [修改] 深度刪除: 除了刪除 Body，還會刪除該 Body 使用的 Mesh 和 Material。
-    注意：這是一個簡化的實作，如果多個 Body 共用同一個 Mesh，這裡可能會誤刪。
-    但鑑於您的 Importer 邏輯是每個物件都有自己的一套 Mesh (Name Prefix)，這應該是安全的。
+    [修正] 安全刪除: 只有當 Mesh 或 Material 沒有被其他 Body 使用時，才將其刪除。
+    防止刪除共用資源導致崩潰。
     """
     try:
         tree = ET.parse(xml_path)
@@ -168,41 +167,61 @@ def delete_body_from_scene(xml_path, body_name):
         worldbody = root.find("worldbody")
         asset = root.find("asset")
         
-        found_body = None
+        target_body = None
         for body in worldbody.findall("body"):
             if body.get("name") == body_name:
-                found_body = body
+                target_body = body
                 break
         
-        if found_body is None: return False
+        if target_body is None: return False
 
-        # 1. 找出該 Body 使用的所有 Mesh 和 Material 名稱
-        used_meshes = set()
-        used_materials = set()
+        # 1. 找出「目標 Body」使用的資源
+        target_meshes = set()
+        target_materials = set()
         
-        for geom in found_body.findall(".//geom"):
+        for geom in target_body.findall(".//geom"):
             m = geom.get("mesh")
-            if m: used_meshes.add(m)
+            if m: target_meshes.add(m)
             mat = geom.get("material")
-            if mat: used_materials.add(mat)
+            if mat: target_materials.add(mat)
 
-        # 2. 刪除 Body 節點
-        worldbody.remove(found_body)
+        # 2. 找出「其他所有 Body」正在使用的資源 (白名單)
+        keep_meshes = set()
+        keep_materials = set()
+        
+        for body in worldbody.findall("body"):
+            if body is target_body: continue # 跳過自己
+            
+            for geom in body.findall(".//geom"):
+                m = geom.get("mesh")
+                if m: keep_meshes.add(m)
+                mat = geom.get("material")
+                if mat: keep_materials.add(mat)
+
+        # 3. 計算差集：只刪除「目標有用」且「其他人沒用」的資源
+        meshes_to_delete = target_meshes - keep_meshes
+        materials_to_delete = target_materials - keep_materials
+
+        # 4. 執行刪除
+        worldbody.remove(target_body)
         print(f"[loader] Deleted body: {body_name}")
 
-        # 3. 刪除相關聯的 Asset (Mesh & Material)
         if asset is not None:
             # 刪除 Mesh
-            meshes_to_remove = [m for m in asset.findall("mesh") if m.get("name") in used_meshes]
-            for m in meshes_to_remove:
-                asset.remove(m)
-                print(f"[loader] Deleted dependent mesh: {m.get('name')}")
-            
+            count_m = 0
+            for m_node in list(asset.findall("mesh")): # 用 list() 複製一份以便遍歷時刪除
+                if m_node.get("name") in meshes_to_delete:
+                    asset.remove(m_node)
+                    count_m += 1
+            if count_m > 0: print(f"[loader] Cleaned up {count_m} unused meshes.")
+
             # 刪除 Material
-            mats_to_remove = [m for m in asset.findall("material") if m.get("name") in used_materials]
-            for m in mats_to_remove:
-                asset.remove(m)
-                print(f"[loader] Deleted dependent material: {m.get('name')}")
+            count_mat = 0
+            for mat_node in list(asset.findall("material")):
+                if mat_node.get("name") in materials_to_delete:
+                    asset.remove(mat_node)
+                    count_mat += 1
+            if count_mat > 0: print(f"[loader] Cleaned up {count_mat} unused materials.")
 
         if hasattr(ET, "indent"): ET.indent(tree, space="  ", level=0)
         tree.write(xml_path, encoding="utf-8", xml_declaration=True)
