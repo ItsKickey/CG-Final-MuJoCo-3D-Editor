@@ -33,8 +33,6 @@ def setup_logging():
             logging.StreamHandler(sys.stdout) # 讓終端機也能看到
         ]
     )
-
-    # === 關鍵：攔截未捕獲的例外 (Global Exception Hook) ===
     # 這段代碼保證了：即使程式當機，錯誤訊息也會被寫入 Log 檔
     def handle_exception(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -43,8 +41,6 @@ def setup_logging():
 
         logging.error("Uncaught Exception (Crash Detected):", exc_info=(exc_type, exc_value, exc_traceback))
         
-        # (選擇性) 你也可以在這裡加一個簡單的 tkinter messagebox 彈窗告訴使用者程式錯了
-        # 但為了避免在錯誤處理中又出錯，通常只寫 Log 就夠了
 
     sys.excepthook = handle_exception
 

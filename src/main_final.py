@@ -12,10 +12,12 @@ from tkinter import filedialog, simpledialog
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 使用模組方式匯入，以便讀取全域變數
+import src.loader 
 from src.loader import (
     load_scene_with_object, delete_body_from_scene, update_body_xml, 
     add_light_to_scene, update_light_xml, change_floor_texture, 
-    batch_update_bodies_xml, LAST_IMPORTED_BODY_NAME
+    batch_update_bodies_xml
 )
 from src.importer import convert_obj_with_obj2mjcf
 from src.utils import euler2quat, quat2euler, save_simulation_state, restore_simulation_state
@@ -39,7 +41,6 @@ class EditorState:
         self.last_mouse_x = 0; self.last_mouse_y = 0
         self.is_dragging = False; 
         
-        # [修正] 分開記錄左右鍵狀態
         self.button_left_pressed = False; 
         self.button_right_pressed = False 
         self.shift_pressed = False
@@ -57,6 +58,9 @@ class EditorState:
         self.current_rgb = (1.0, 1.0, 1.0)
         self.is_placing = False; self.is_valid = False
         self.is_light_selected = False
+        
+        # [移除] self.paused = False (不需要暫停了)
+        self.target_fps = 60.0
 
     def defer(self, func, *args):
         self.pending_tasks.append(lambda: func(*args))
@@ -170,15 +174,21 @@ def _import_obj_workflow_logic(obj_path=None):
         state.scn = mujoco.MjvScene(state.model, maxgeom=10000)
         state.ctx = mujoco.MjrContext(state.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         refresh_object_list_ui()
+        
         target_bid = -1
-        if LAST_IMPORTED_BODY_NAME:
-            target_bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
+        # 自動選取剛匯入的物件
+        if src.loader.LAST_IMPORTED_BODY_NAME:
+            target_bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, src.loader.LAST_IMPORTED_BODY_NAME)
+        
         if target_bid >= 0:
-            select_object_by_id(target_bid)
+            select_object_by_id(target_bid) # 這會啟動 PlacementManager，自動關閉碰撞
+            
             if state.gui: state.gui.set_status(f"Imported: {os.path.basename(obj_path)}")
+            # 鏡頭看過去
             state.cam.lookat = state.data.body_xpos[target_bid].copy()
             state.cam.distance = 5.0
             pm.update(state.model, state.data)
+
     except Exception as e:
         print(f"Import Error: {e}")
         if state.gui: state.gui.set_status("Import Failed!")
@@ -193,8 +203,9 @@ def _add_light_workflow_logic():
         spawn_h = state.current_z_height if state.current_z_height > 0 else 3.0
         if add_light_to_scene(active_xml_path, spawn_pos=f"0 0 {spawn_h}"):
             load_model(restore=True)
-            if LAST_IMPORTED_BODY_NAME:
-                bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, LAST_IMPORTED_BODY_NAME)
+            # 新增燈光後也自動選取
+            if src.loader.LAST_IMPORTED_BODY_NAME:
+                bid = mujoco.mj_name2id(state.model, mujoco.mjtObj.mjOBJ_BODY, src.loader.LAST_IMPORTED_BODY_NAME)
                 if bid >= 0:
                     select_object_by_id(bid)
                     if state.gui: state.gui.set_status("Added Point Light")
@@ -237,9 +248,8 @@ def _confirm_current_placement_logic():
                 if light_idx >= 0:
                     rgb = state.model.light_diffuse[light_idx]
                     update_light_xml(active_xml_path, body_name, rgb)
-        pm.confirm_placement(state.model)
+        pm.confirm_placement(state.model) 
         
-        # [修正] 確認後清除選取狀態，並通知 GUI 取消高亮
         state.selected_body_id = -1
         state.selected_qpos_adr = -1
         state.is_light_selected = False
@@ -359,7 +369,6 @@ def snap_to_grid(val): return round(val / GRID_SIZE) * GRID_SIZE
 
 def mouse_button_callback(window, button, action, mods):
     state.button_left_pressed = (button == glfw.MOUSE_BUTTON_LEFT and action == glfw.PRESS)
-    # [修正] 偵測右鍵
     state.button_right_pressed = (button == glfw.MOUSE_BUTTON_RIGHT and action == glfw.PRESS)
     state.shift_pressed = (glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS)
     
@@ -381,7 +390,6 @@ def cursor_pos_callback(window, xpos, ypos):
             state.data.qpos[state.selected_qpos_adr+2] = state.current_z_height
             mujoco.mj_forward(state.model, state.data) 
             
-    # [修正] 改用右鍵來旋轉鏡頭，解決 GUI 拖曳衝突
     elif state.button_right_pressed:
         mujoco.mjv_moveCamera(state.model, mujoco.mjtMouse.mjMOUSE_ROTATE_V, dx/500, dy/500, state.scn, state.cam)
 
@@ -451,14 +459,13 @@ def main():
     print("[Main] Entering Loop...")
     frame_count = 0
 
-    TARGET_FPS = 60.0
-    target_dt = 1.0 / TARGET_FPS
-    
-
     while not glfw.window_should_close(window):
-        glfw.poll_events()
+        #  動態 FPS 同步機制
+        current_fps = state.target_fps if state.target_fps > 5 else 5.0
+        target_dt = 1.0 / current_fps
         loop_start_time = time.time()
-       
+
+        glfw.poll_events()
         
         while state.pending_tasks:
             task = state.pending_tasks.pop(0)
@@ -468,11 +475,14 @@ def main():
         state.gui.process_inputs()
 
         try:
+            #  移除 paused 檢查，物理永遠執行
             sim_start = state.data.time
             max_steps = 10; steps = 0
-            while (state.data.time - sim_start < 1.0/60.0) and (steps < max_steps):
+            while (state.data.time - sim_start < target_dt) and (steps < max_steps):
                 pm.update(state.model, state.data)
                 state.data.qfrc_applied[:] = 0 
+                
+                # 處理選取中的物體 (懸浮/無重力)
                 if pm.active_body_id != -1:
                     for i in range(state.model.nbody):
                         if i == 0: continue
@@ -481,6 +491,8 @@ def main():
                             dof_adr = state.model.jnt_dofadr[jnt_adr]
                             state.data.qvel[dof_adr : dof_adr+6] = 0
                             state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+                
+                # 燈光靜止邏輯
                 for i in range(state.model.nlight):
                     body_id = state.model.light_bodyid[i]
                     jnt_adr = state.model.body_jntadr[body_id]
@@ -488,6 +500,8 @@ def main():
                         dof_adr = state.model.jnt_dofadr[jnt_adr]
                         state.data.qvel[dof_adr : dof_adr+6] = 0
                         state.data.qfrc_applied[dof_adr : dof_adr+6] = state.data.qfrc_bias[dof_adr : dof_adr+6]
+                
+                # 邊界重置邏輯
                 for i in range(state.model.nbody):
                     jnt_adr = state.model.body_jntadr[i]
                     if jnt_adr >= 0 and state.model.jnt_type[jnt_adr] == mujoco.mjtJoint.mjJNT_FREE:
@@ -495,8 +509,10 @@ def main():
                         if state.data.qpos[qpos_adr+2] < -5.0:
                             state.data.qpos[qpos_adr:qpos_adr+3] = [0,0,5]
                             state.data.qvel[:] = 0
+                
                 mujoco.mj_step(state.model, state.data)
                 steps += 1
+            
             state.is_placing = (pm.active_body_id != -1)
             state.is_valid = pm.is_valid
             if time.time() - state.last_auto_save_time > 1.0:
@@ -521,9 +537,9 @@ def main():
         except Exception as e:
             print(f"[Render Error] {e}")
             time.sleep(0.1)
+
+        #  FPS 鎖定
         elapsed = time.time() - loop_start_time
-        
-        # 如果跑太快 (花費時間 < 1/60 秒)，就睡覺等待
         if elapsed < target_dt:
             time.sleep(target_dt - elapsed)
 

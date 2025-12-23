@@ -224,7 +224,7 @@ class PlacementManager:
         is_overlapping = False
         my_geoms = get_body_geoms(model, self.active_body_id)
         
-        # [修改] 改用 OBB 檢查
+        # 改用 OBB 檢查
         for my_g in my_geoms:
             # 取得自己的 OBB
             my_obb = collision_calc.get_obb(model, data, my_g)

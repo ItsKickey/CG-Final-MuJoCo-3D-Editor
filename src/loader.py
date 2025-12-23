@@ -158,7 +158,7 @@ def load_scene_with_object(main_xml_path, obj_xml_path, spawn_height=5.0, save_m
 
 def delete_body_from_scene(xml_path, body_name):
     """
-    [修正] 安全刪除: 只有當 Mesh 或 Material 沒有被其他 Body 使用時，才將其刪除。
+    安全刪除: 只有當 Mesh 或 Material 沒有被其他 Body 使用時，才將其刪除。
     防止刪除共用資源導致崩潰。
     """
     try:
@@ -253,7 +253,7 @@ def update_body_xml(xml_path, body_name, pos, quat):
         print(f"[loader] Update XML Error: {e}")
         return False
     
-# [新增] 批次更新所有物體的位置 (用於 Auto-Sync)
+#  批次更新所有物體的位置 (用於 Auto-Sync)
 def batch_update_bodies_xml(xml_path, model, data):
     """
     遍歷模型中所有自由移動的 Body，將其當前的 qpos (位置/旋轉) 寫入 XML。

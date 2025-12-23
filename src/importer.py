@@ -6,8 +6,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 # [新增] 嘗試導入 obj2mjcf
-# 確保專案根目錄在 sys.path 中，這樣才能導入 obj2mjcf
-# 如果是開發模式，根目錄通常已經在 path 中，或者是 src 的上一層
+
 try:
     from obj2mjcf.cli import process_obj, Args
 except ImportError:
@@ -27,7 +26,6 @@ else:
     PROJECT_ROOT = Path(__file__).parent.parent
 
 
-# [修改] 將路徑改為根目錄下的 "Import_mjcf"
 IMPORT_DEST_DIR = PROJECT_ROOT / "Import_mjcf" 
 
 def convert_obj_with_obj2mjcf(obj_path: str) -> Path:
@@ -35,7 +33,7 @@ def convert_obj_with_obj2mjcf(obj_path: str) -> Path:
     obj_dir  = obj_path.parent
     obj_stem = obj_path.stem
 
-    # 1. [修改] 直接呼叫 obj2mjcf 的 Python 函式，不再使用 subprocess
+    # 1. [修改] obj2mjcf 的 Python 函式，不再使用 subprocess
     print(f"[obj2mjcf] Processing internal: {obj_path}")
     
     # 建構參數物件，模擬 CLI 的參數
@@ -44,9 +42,6 @@ def convert_obj_with_obj2mjcf(obj_path: str) -> Path:
         obj_dir=str(obj_dir),
         save_mjcf=True,
         overwrite=True,
-        # 如果需要調整其他參數 (例如貼圖縮放、凸包分解)，可以在這裡加入:
-        # texture_resize_percent=0.8,
-        # decompose=False, 
     )
 
     try:

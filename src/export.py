@@ -69,7 +69,6 @@ def export_project_to_zip(active_xml_path, scene_name):
         is_inside_import = (not rel_in_import.startswith("..")) and (not os.path.isabs(rel_in_import))
 
         if is_inside_import:
-            # === Case A: 檔案在 Import_mjcf 內 ===
             
             # 特別處理: grid_textures (只複製單檔)
             path_parts = rel_in_import.split(os.sep)

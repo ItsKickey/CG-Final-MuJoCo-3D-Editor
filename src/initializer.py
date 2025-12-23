@@ -50,7 +50,7 @@ def initialize_project():
         with open(base_xml, "w", encoding="utf-8") as f:
             f.write(DEFAULT_SCENE_XML.strip())
     
-    # 3. [關鍵修改] 強制重置 Current Scene
+    # 3. 強制重置 Current Scene
     # 不管之前有沒有 current_scene，直接用 default 覆蓋它
     print(f"[Init] Resetting runtime scene from default...")
     shutil.copy(base_xml, current_xml)
