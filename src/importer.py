@@ -1,10 +1,22 @@
 # src/importer.py
-import subprocess
 import shutil
 import os
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
+
+# [新增] 嘗試導入 obj2mjcf
+# 確保專案根目錄在 sys.path 中，這樣才能導入 obj2mjcf
+# 如果是開發模式，根目錄通常已經在 path 中，或者是 src 的上一層
+try:
+    from obj2mjcf.cli import process_obj, Args
+except ImportError:
+    # 如果執行環境的 path 設定不同，手動加入根目錄
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.append(str(project_root))
+    from obj2mjcf.cli import process_obj, Args
 
 # 定義匯入後的統一存放路徑
 if getattr(sys, 'frozen', False):
@@ -23,20 +35,34 @@ def convert_obj_with_obj2mjcf(obj_path: str) -> Path:
     obj_dir  = obj_path.parent
     obj_stem = obj_path.stem
 
-    # 1. 呼叫 obj2mjcf
-    cmd = [
-        "obj2mjcf",
-        "--obj-dir", str(obj_dir),
-        "--obj-filter", obj_path.name,
-        "--save-mjcf",
-        "--overwrite",
-    ]
-    print("[obj2mjcf] running:", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    # 1. [修改] 直接呼叫 obj2mjcf 的 Python 函式，不再使用 subprocess
+    print(f"[obj2mjcf] Processing internal: {obj_path}")
+    
+    # 建構參數物件，模擬 CLI 的參數
+    # 對應之前的指令: --obj-dir ... --save-mjcf --overwrite
+    args = Args(
+        obj_dir=str(obj_dir),
+        save_mjcf=True,
+        overwrite=True,
+        # 如果需要調整其他參數 (例如貼圖縮放、凸包分解)，可以在這裡加入:
+        # texture_resize_percent=0.8,
+        # decompose=False, 
+    )
+
+    try:
+        # process_obj 會自動在 obj_dir 下建立一個以 obj_stem 命名的資料夾，並產生 .xml
+        process_obj(obj_path, args)
+    except Exception as e:
+        print(f"[obj2mjcf] Error during processing: {e}")
+        raise e
 
     # 2. 定位產生的資料夾
+    # obj2mjcf 的邏輯是會在 obj 旁邊建立一個與檔名相同的資料夾
     generated_dir = obj_dir / obj_stem
+    
+    # 檢查是否成功建立
     if not generated_dir.exists():
+        # 如果失敗，嘗試找找看有沒有散落的 XML (雖然 process_obj 通常會建資料夾)
         potential_xml = obj_dir / f"{obj_stem}.xml"
         if potential_xml.exists():
             print("[importer] Warning: obj2mjcf did not create a folder. Creating one manually.")
@@ -66,7 +92,7 @@ def convert_obj_with_obj2mjcf(obj_path: str) -> Path:
     if not xml_path.exists():
         raise FileNotFoundError(f"[importer] MJCF XML not found in target: {xml_path}")
 
-    # 5. [XML 後處理] 自動 rename
+    # 5. [XML 後處理] 自動 rename (保持您原本的邏輯不變)
     tree = ET.parse(xml_path)
     root = tree.getroot()
 

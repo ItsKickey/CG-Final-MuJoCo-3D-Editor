@@ -1,1 +1,21 @@
-2025-12-22 18:00:43,591 [INFO] Logger initialized. Log file: D:\Research\CG\Final\editor_debug.log
+2025-12-23 10:45:13,219 [INFO] Logger initialized. Log file: D:\Research\CG\Final\editor_debug.log
+2025-12-23 10:45:16,415 [INFO] Saving processed meshes to D:\Research\CG\Final\Assets\obj\cargo_A\cargo_A
+2025-12-23 10:45:16,415 [INFO] Found MTL file: D:\Research\CG\Final\Assets\obj\cargo_A\material.mtl
+2025-12-23 10:45:16,415 [INFO] Found material: spacebits_texture
+2025-12-23 10:45:16,416 [INFO] Done processing MTL file
+2025-12-23 10:45:16,416 [INFO] Processing OBJ file with trimesh
+2025-12-23 10:45:16,425 [DEBUG] STREAM b'IHDR' 16 13
+2025-12-23 10:45:16,426 [DEBUG] STREAM b'IDAT' 41 25715
+2025-12-23 10:45:16,427 [INFO] Saving mesh D:\Research\CG\Final\Assets\obj\cargo_A\cargo_A\cargo_A.obj
+2025-12-23 10:45:16,428 [DEBUG] Exporting 128 faces as OBJ
+2025-12-23 10:45:16,461 [INFO] Saved MJCF to D:\Research\CG\Final\Assets\obj\cargo_A\cargo_A\cargo_A.xml
+2025-12-23 10:45:24,077 [INFO] Saving processed meshes to D:\Research\CG\Final\Assets\obj\cargo_A\cargo_A
+2025-12-23 10:45:24,078 [INFO] Found MTL file: D:\Research\CG\Final\Assets\obj\cargo_A\material.mtl
+2025-12-23 10:45:24,078 [INFO] Found material: spacebits_texture
+2025-12-23 10:45:24,078 [INFO] Done processing MTL file
+2025-12-23 10:45:24,078 [INFO] Processing OBJ file with trimesh
+2025-12-23 10:45:24,079 [DEBUG] STREAM b'IHDR' 16 13
+2025-12-23 10:45:24,079 [DEBUG] STREAM b'IDAT' 41 25715
+2025-12-23 10:45:24,080 [INFO] Saving mesh D:\Research\CG\Final\Assets\obj\cargo_A\cargo_A\cargo_A.obj
+2025-12-23 10:45:24,080 [DEBUG] Exporting 128 faces as OBJ
+2025-12-23 10:45:24,115 [INFO] Saved MJCF to D:\Research\CG\Final\Assets\obj\cargo_A\cargo_A\cargo_A.xml

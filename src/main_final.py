@@ -451,8 +451,14 @@ def main():
     print("[Main] Entering Loop...")
     frame_count = 0
 
+    TARGET_FPS = 60.0
+    target_dt = 1.0 / TARGET_FPS
+    
+
     while not glfw.window_should_close(window):
         glfw.poll_events()
+        loop_start_time = time.time()
+       
         
         while state.pending_tasks:
             task = state.pending_tasks.pop(0)
@@ -515,6 +521,11 @@ def main():
         except Exception as e:
             print(f"[Render Error] {e}")
             time.sleep(0.1)
+        elapsed = time.time() - loop_start_time
+        
+        # 如果跑太快 (花費時間 < 1/60 秒)，就睡覺等待
+        if elapsed < target_dt:
+            time.sleep(target_dt - elapsed)
 
         frame_count += 1
 
